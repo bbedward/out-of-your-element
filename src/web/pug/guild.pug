@@ -1,0 +1,219 @@
+extends includes/template.pug
+
+mixin badge-readonly
+  .s-badge.s-badge__xs.s-badge__icon.s-badge__muted
+    != icons.Icons.IconEyeSm
+    | Read-only
+
+mixin badge-private
+  .s-badge.s-badge__xs.s-badge__icon.s-badge__warning
+    != icons.Icons.IconLockSm
+    | Private
+
+mixin discord(channel, radio=false)
+  //- Previously, we passed guild.roles as the second parameter, but this doesn't quite match Discord's behaviour. See issue #42 for why this was changed.
+  //- Basically we just want to assign badges based on the channel overwrites, without considering the guild's base permissions. /shrug
+  - let permissions = dUtils.getPermissions([], [{id: guild_id, name: "@everyone", permissions: 1<<10 | 1<<11}], null, channel.permission_overwrites)
+  .s-user-card.s-user-card__small
+    if !dUtils.hasPermission(permissions, DiscordTypes.PermissionFlagsBits.ViewChannel)
+      != icons.Icons.IconLock
+    else if channel.type === 5
+      != icons.Icons.IconBullhorn
+    else if channel.type === 2
+      != icons.Icons.IconPhone
+    else if channel.type === 11 || channel.type === 12
+      != icons.Icons.IconCollection
+    else
+      include includes/hash.svg
+    .s-user-card--info.ws-nowrap
+      if radio
+        = channel.name
+      else
+        .s-user-card--link.fs-body1
+          a(href=`https://discord.com/channels/${channel.guild_id}/${channel.id}`)= channel.name
+      if channel.parent_id
+        .s-user-card--location= discord.channels.get(channel.parent_id).name
+      if !dUtils.hasPermission(permissions, DiscordTypes.PermissionFlagsBits.ViewChannel)
+        +badge-private
+      else if !dUtils.hasPermission(permissions, DiscordTypes.PermissionFlagsBits.SendMessages)
+        +badge-readonly
+
+mixin matrix(row, radio=false, badge="")
+  .s-user-card.s-user-card__small
+    != icons.Icons.IconMessage
+    .s-user-card--info.ws-nowrap
+      if radio
+        = row.nick || row.name
+      else
+        .s-user-card--link.fs-body1
+          a(href=`https://matrix.to/#/${row.room_id}`)= row.nick || row.name
+      if row.join_rule === "invite"
+        +badge-private
+
+block body
+  .s-page-title.mb24
+    h1.s-page-title--header= guild.name
+
+  .d-flex.g16(class="sm:fw-wrap")
+    .fl-grow1
+      h2.fs-headline1 Invite a Matrix user
+
+      form.d-grid.g-af-column.gy4.gx8.jc-start(method="post" action=rel("/api/invite") hx-post=rel("/api/invite") hx-trigger="submit" hx-swap="none" hx-on::after-request="if (event.detail.successful) this.reset()" hx-disabled-elt="input, button" hx-indicator="#invite-button")
+        label.s-label(for="mxid") Matrix ID
+        input.fl-grow1.s-input.wmx3#mxid(name="mxid" required placeholder="@user:example.org" pattern="@([^:]+):([a-z0-9:\\-]+\\.[a-z0-9.:\\-]+)")
+        label.s-label(for="permissions") Permissions
+        .s-select
+          select#permissions(name="permissions")
+            option(value="default") Default
+            option(value="moderator") Moderator
+            option(value="admin") Admin
+        input(type="hidden" name="guild_id" value=guild_id)
+        .grid--row-start2
+          button.s-btn.s-btn__filled#invite-button Invite
+    div
+      .s-card.d-flex.ai-center.jc-center(style="min-width: 132px; min-height: 132px;")
+        button.s-btn(class=space_id ? "s-btn__muted" : "s-btn__filled" hx-get=rel(`/qr?guild_id=${guild_id}`) hx-indicator="closest button" hx-swap="outerHTML" hx-disabled-elt="this") Show QR
+
+  if space_id
+    h3.mt32.fs-category Privacy level
+      span#privacy-level-loading
+    .s-card
+      form(hx-post=rel("/api/privacy-level") hx-trigger="change" hx-indicator="#privacy-level-loading" hx-disabled-elt="input")
+        input(type="hidden" name="guild_id" value=guild_id)
+
+        .s-toggle-switch.s-toggle-switch__multiple.s-toggle-switch__incremental.d-grid.gx16.ai-center(style="grid-template-columns: auto 1fr")
+          input(type="radio" name="privacy_level" value="directory" id="privacy-level-directory" checked=(privacy_level === 2))
+          label.d-flex.gx8.jc-center.grid--row-start3(for="privacy-level-directory")
+            != icons.Icons.IconPlusSm
+            != icons.Icons.IconInternationalSm
+            .fl-grow1 Directory
+
+          input(type="radio" name="privacy_level" value="link" id="privacy-level-link" checked=(privacy_level === 1))
+          label.d-flex.gx8.jc-center.grid--row-start2(for="privacy-level-link")
+            != icons.Icons.IconPlusSm
+            != icons.Icons.IconLinkSm
+            .fl-grow1 Link
+
+          input(type="radio" name="privacy_level" value="invite" id="privacy-level-invite" checked=(privacy_level === 0))
+          label.d-flex.gx8.jc-center.grid--row-start1(for="privacy-level-invite")
+            svg.svg-icon(width="14" height="14" viewBox="0 0 14 14")
+            != icons.Icons.IconLockSm
+            .fl-grow1 Invite
+
+          p.s-description.m0 In-app direct invite from another user
+          p.s-description.m0 Shareable invite links, like Discord
+          p.s-description.m0 Publicly listed in directory, like Discord server discovery
+
+    h2.mt48.fs-headline1 Features
+    .s-card.d-grid.px0.g16
+      form.d-flex.ai-center.g16
+        #url-preview-loading.p8
+        - let value = !!select("guild_space", "url_preview", {guild_id}).pluck().get()
+        input(type="hidden" name="guild_id" value=guild_id)
+        input.s-toggle-switch#url-preview(name="url_preview" type="checkbox" hx-post=rel("/api/url-preview") hx-indicator="#url-preview-loading" hx-disabled-elt="this" checked=value autocomplete="off")
+        label.s-label.fl-grow1(for="url-preview")
+          | Show Discord's URL previews on Matrix
+          p.s-description Shows info about links posted to chat. Discord's previews are generally better quality than Synapse's, especially for social media and videos.
+
+      form.d-flex.ai-center.g16
+        #presence-loading.p8
+        - value = !!select("guild_space", "presence", {guild_id}).pluck().get()
+        input(type="hidden" name="guild_id" value=guild_id)
+        input.s-toggle-switch#presence(name="presence" type="checkbox" hx-post=rel("/api/presence") hx-indicator="#presence-loading" hx-disabled-elt="this" checked=value autocomplete="off")
+        label.s-label(for="presence")
+          | Show online statuses on Matrix
+          p.s-description This might cause lag on really big Discord servers.
+
+  if space_id
+    h2.mt48.fs-headline1 Channel setup
+
+    h3.mt32.fs-category Linked channels
+    .s-card.bs-sm.p0
+      form.s-table-container(method="post" action=rel("/api/unlink") hx-confirm="Do you want to unlink these channels?\nIt may take a moment to clean up Matrix resources.")
+        input(type="hidden" name="guild_id" value=guild_id)
+        table.s-table.s-table__bx-simple
+          each row in linkedChannelsWithDetails
+            tr
+              td.w40: +discord(row.channel)
+              td.p2: button.s-btn.s-btn__muted.s-btn__xs(name="channel_id" value=row.channel.id hx-post=rel("/api/unlink") hx-trigger="click" hx-disabled-elt="this")!= icons.Icons.IconLinkSm
+              td: +matrix(row)
+          else
+            tr
+              td(colspan="3")
+                .s-empty-state No channels linked between Discord and Matrix yet...
+
+  h3.fs-category.mt32 Auto-create
+  .s-card.d-grid.px0
+    form.d-flex.ai-center.g16
+      #autocreate-loading.p8
+      - let value = !!select("guild_active", "autocreate", {guild_id}).pluck().get()
+      input(type="hidden" name="guild_id" value=guild_id)
+      input.s-toggle-switch#autocreate(name="autocreate" type="checkbox" hx-post=rel("/api/autocreate") hx-indicator="#autocreate-loading" hx-disabled-elt="this" checked=value autocomplete="off")
+      label.s-label.fl-grow1(for="autocreate")
+        | Create new Matrix rooms automatically
+        p.s-description If you want, OOYE can automatically create new Matrix rooms and link them when an unlinked Discord channel is spoken in.
+
+  if space_id
+    h3.mt32.fs-category Manually link channels
+    form.d-flex.g16.ai-start(hx-post=rel("/api/link") hx-trigger="submit" hx-disabled-elt="input, button" hx-indicator="#link-button")
+      .fl-grow2.s-btn-group.fd-column.w40
+        each channel in unlinkedChannels
+          input.s-btn--radio(type="radio" name="discord" required id=channel.id value=channel.id)
+          label.s-btn.s-btn__muted.ta-left.truncate(for=channel.id)
+            +discord(channel, true, "Announcement")
+        else
+          .s-empty-state.p8 All Discord channels are linked.
+      .fl-grow1.s-btn-group.fd-column.w30
+        each room in unlinkedRooms
+          input.s-btn--radio(type="radio" name="matrix" required id=room.room_id value=room.room_id)
+          label.s-btn.s-btn__muted.ta-left.truncate(for=room.room_id)
+            +matrix(room, true)
+        else
+          .s-empty-state.p8 All Matrix rooms are linked.
+      input(type="hidden" name="guild_id" value=guild_id)
+      div
+        button.s-btn.s-btn__icon.s-btn__filled#link-button
+          != icons.Icons.IconMerge
+          = ` Link`
+
+    details.mt48
+      summary Debug room list
+      .d-grid.grid__2.gx24
+        div
+          h3.mt24 Channels
+          p Channels are read from the channel_room table and then merged with the discord.channels memory cache to make the merged list. Anything in memory cache that's not in channel_room is considered unlinked.
+        div
+          h3.mt24 Rooms
+          p Rooms use the same merged list as channels, based on augmented channel_room data. Then, rooms are read from the space. Anything in the space that's not merged is considered unlinked.
+        div
+          h3.mt24 Unavailable channels: Deleted from Discord
+          .s-card.p0
+            ul.my8.ml24
+              each row in removedUncachedChannels
+                li: a(href=`https://discord.com/channels/${guild_id}/${row.id}`)= row.nick || row.name
+          h3.mt24 Unavailable channels: Wrong type
+          .s-card.p0
+            ul.my8.ml24
+              each row in removedWrongTypeChannels
+                li: a(href=`https://discord.com/channels/${guild_id}/${row.id}`) (#{row.type}) #{row.name}
+          h3.mt24 Unavailable channels: Bridge can't access
+          .s-card.p0
+            ul.my8.ml24
+              each row in removedPrivateChannels
+                li: a(href=`https://discord.com/channels/${guild_id}/${row.id}`)= row.name
+        div- // Rooms
+          h3.mt24 Unavailable rooms: Already linked
+          .s-card.p0
+            ul.my8.ml24
+              each row in removedLinkedRooms
+                li: a(href=`https://matrix.to/#/${row.room_id}`)= row.name
+          h3.mt24 Unavailable rooms: Wrong type
+          .s-card.p0
+            ul.my8.ml24
+              each row in removedWrongTypeRooms
+                li: a(href=`https://matrix.to/#/${row.room_id}`) (#{row.room_type}) #{row.name}
+          h3.mt24 Unavailable rooms: Archived thread
+          .s-card.p0
+            ul.my8.ml24
+              each row in removedArchivedThreadRooms
+                li: a(href=`https://matrix.to/#/${row.room_id}`)= row.name
