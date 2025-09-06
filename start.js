@@ -8,7 +8,7 @@ const HeatSync = require("heatsync")
 
 const {reg} = require("./src/matrix/read-registration")
 const passthrough = require("./src/passthrough")
-const db = new sqlite("ooye.db")
+const db = new sqlite("/srv/ooye/ooye.db")
 
 const sync = new HeatSync({watchFunction: fs.watchFile})
 
