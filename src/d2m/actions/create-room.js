@@ -40,7 +40,7 @@ const PRIVACY_ENUMS = {
 
 const DEFAULT_PRIVACY_LEVEL = 0
 
-const READ_ONLY_ROOM_EVENTS_DEFAULT_POWER = 50
+const READ_ONLY_ROOM_EVENTS_DEFAULT_POWER = 0
 
 /** @type {Map<string, Promise<string>>} channel ID -> Promise<room ID> */
 const inflightRoomCreate = new Map()
