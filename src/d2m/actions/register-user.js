@@ -161,7 +161,7 @@ function memberToPowerLevel(user, member, guild, channel) {
 	 * 	- Mute Members & Deafen Members: Can moderate by silencing disruptive people in ways they can't undo.
 	 * 	- Moderate Members.
 	 */
-	if (utils.hasSomePermissions(permissions, ["ManageMessages", "ManageNicknames", "ManageThreads", "KickMembers", "BanMembers", "MuteMembers", "DeafenMembers", "ModerateMembers"])) return 0
+	if (utils.hasSomePermissions(permissions, ["ManageMessages", "ManageNicknames", "ManageThreads", "KickMembers", "BanMembers", "MuteMembers", "DeafenMembers", "ModerateMembers"])) return 50
 	/* PL 50 = if room is read-only but the user has been specially allowed to send messages */
 	const everyoneCanSend = utils.hasPermission(everyonePermissions, DiscordTypes.PermissionFlagsBits.SendMessages)
 	const userCanSend = utils.hasPermission(permissions, DiscordTypes.PermissionFlagsBits.SendMessages)
