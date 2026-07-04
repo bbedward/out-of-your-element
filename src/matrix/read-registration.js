@@ -5,7 +5,8 @@ const crypto = require("crypto")
 const assert = require("assert").strict
 const path = require("path")
 
-const registrationFilePath = path.join(process.cwd(), "registration.yaml")
+const dataDir = process.env.OOYE_DATA_DIR || process.cwd()
+const registrationFilePath = path.join(dataDir, "registration.yaml")
 
 /** @param {import("../types").AppServiceRegistrationConfig} reg */
 function checkRegistration(reg) {

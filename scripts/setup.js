@@ -19,7 +19,8 @@ const DiscordTypes = require("discord-api-types/v10")
 const {createApp, defineEventHandler, toNodeListener} = require("h3")
 
 const passthrough = require("../src/passthrough")
-const db = new sqlite("ooye.db")
+const {getDatabase} = require("../src/db/database")
+const db = getDatabase()
 const migrate = require("../src/db/migrate")
 
 const sync = new HeatSync({watchFS: false})
