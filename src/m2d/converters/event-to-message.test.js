@@ -3423,6 +3423,7 @@ test("event2message: rich reply to a state event with no body", async t => {
 			api: {
 				getEvent: mockGetEvent(t, "!TqlyQmifxGUggEmdBN:cadence.moe", "$f-noT-d-Eo_Xgpc05Ww89ErUXku4NwKWYGHLzWKo1kU", {
 					type: "m.room.topic",
+					state_key: "",
 					sender: "@ampflower:matrix.org",
 					content: {
 						topic: "you're cute"

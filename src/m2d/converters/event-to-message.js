@@ -193,7 +193,7 @@ turndownService.addRule("emoji", {
 
 	replacement: function (content, node) {
 		const mxcUrl = node.getAttribute("src")
-		const guessedName = node.getAttribute("title").replace(/^:|:$/g, "")
+		const guessedName = node.getAttribute("title")
 		return convertEmoji(mxcUrl, guessedName, true, true)
 	}
 })
@@ -236,6 +236,7 @@ function getCodeContent(preCode) {
  * @returns {string} discord markdown that represents the custom emoji in some form
  */
 function convertEmoji(mxcUrl, nameForGuess, allowSpriteSheetIndicator, allowLink) {
+	nameForGuess = nameForGuess?.replace(/^:|:$/g, "") || null
 	// Get the known emoji from the database.
 	if (mxcUrl) var row = select("emoji", ["emoji_id", "name", "animated"], {mxc_url: mxcUrl}).get()
 	// Now we have to search all servers to see if we're able to send this emoji.
@@ -762,7 +763,7 @@ async function eventToMessage(event, guild, channel, di) {
 		// Handling replies. We'll look up the data of the replied-to event from the Matrix homeserver.
 		// Note that an <mx-reply> element is not guaranteed because this might be m.new_content.
 		await (async () => {
-			const repliedToEventId = event.content["m.relates_to"]?.["m.in_reply_to"]?.event_id
+			let repliedToEventId = event.content["m.relates_to"]?.["m.in_reply_to"]?.event_id
 			if (!repliedToEventId) return
 			let repliedToEvent
 			try {
@@ -810,12 +811,6 @@ async function eventToMessage(event, guild, channel, di) {
 				return
 			}
 
-			replyLine = await getL1L2ReplyLine()
-			const row = from("event_message").join("message_room", "message_id").join("historical_channel_room", "historical_room_index")
-				.select("reference_channel_id", "message_id").where({event_id: repliedToEventId}).and("ORDER BY part").get()
-			if (row) {
-				replyLine += `https://discord.com/channels/${guild.id}/${row.reference_channel_id}/${row.message_id} `
-			}
 			// If the event has been edited, the homeserver will include the relation in `unsigned`.
 			if (repliedToEvent.unsigned?.["m.relations"]?.["m.replace"]?.content?.["m.new_content"]) {
 				repliedToEvent = repliedToEvent.unsigned["m.relations"]["m.replace"] // Note: this changes which event_id is in repliedToEvent.
@@ -827,15 +822,40 @@ async function eventToMessage(event, guild, channel, di) {
 			let contentPreview
 			if (fileReplyContentAlternative) {
 				contentPreview = " " + fileReplyContentAlternative
-			} else if (repliedToEvent.unsigned?.redacted_because) {
+			}
+			else if (repliedToEvent.unsigned?.redacted_because) {
 				contentPreview = " (in reply to a deleted message)"
-			} else if (typeof originalRepliedToContent !== "string") {
+			}
+			else if (repliedToEvent.type === "m.reaction") {
+				if (repliedToEvent.content?.["m.relates_to"]?.event_id) {
+					// let the reply link be for the reacted-to message
+					repliedToEventId = repliedToEvent.content["m.relates_to"].event_id
+				}
+				contentPreview = "'s reaction"
+				if (mxUtils.parseMxc(repliedToEvent.content?.["m.relates_to"]?.key)) {
+					// reaction is a custom emoji
+					contentPreview += convertEmoji(repliedToEvent.content["m.relates_to"].key, repliedToEvent.content.shortcode, false, false) || "an unknown emoji"
+				} else {
+					// reaction is a unicode emoji or text
+					const contentPreviewChunks = chunk(repliedToEvent.content["m.relates_to"].key, 50)
+					if (contentPreviewChunks.length) {
+						contentPreview = `: ${contentPreviewChunks[0]}`
+						if (contentPreviewChunks.length > 1) contentPreview = contentPreview.replace(/[,.']$/, "") + "..."
+					}
+				}
+			}
+			else if (typeof originalRepliedToContent !== "string") {
 				// in reply to a weird metadata event like m.room.name, m.room.member...
 				// I'm not implementing text fallbacks for arbitrary room events. this should cover most cases
 				// this has never ever happened in the wild anyway
 				repliedToEvent.sender = ""
-				contentPreview = " (channel details edited)"
-			} else {
+				if ("state_key" in repliedToEvent) {
+					contentPreview = " (channel details edited)"
+				} else {
+					contentPreview = " (unrepresentable event)"
+				}
+			}
+			else {
 				// Generate a reply preview for a standard message
 				let repliedToContent = repliedToEvent.content.body
 				if (repliedToEvent.content.formatted_body) {
@@ -866,6 +886,14 @@ async function eventToMessage(event, guild, channel, di) {
 					contentPreview = ""
 				}
 			}
+
+			replyLine = await getL1L2ReplyLine()
+			const row = from("event_message").join("message_room", "message_id").join("historical_channel_room", "historical_room_index")
+				.select("reference_channel_id", "message_id").where({event_id: repliedToEventId}).and("ORDER BY part").get()
+			if (row) {
+				replyLine += `https://discord.com/channels/${guild.id}/${row.reference_channel_id}/${row.message_id} `
+			}
+
 			const sender = repliedToEvent.sender
 			const authorMention = getUserOrProxyOwnerMention(sender)
 			if (authorMention) {
