@@ -43,6 +43,13 @@ async function encodeDefaultEmoji(input) {
 	const emojis = await emojisp
 	const encoded = encodeURIComponent(input)
 
+	// ™, ® and © are weird, because they exist in two forms: emoji and text...
+	// ... and discord prefers the text version
+	// so if someone reacts with the emoji version, convert it to the text version discord wants
+	if (input === "™️") return encodeURIComponent("™")
+	if (input === "®️") return encodeURIComponent("®")
+	if (input === "©️") return encodeURIComponent("©")
+
 	// Best case scenario: they reacted with an exact replica of a valid emoji.
 	if (emojis.includes(input)) return encoded
 

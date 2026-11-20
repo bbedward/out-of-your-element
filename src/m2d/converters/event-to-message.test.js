@@ -4,7 +4,8 @@ const DiscordTypes = require("discord-api-types/v10")
 const {eventToMessage} = require("./event-to-message")
 const data = require("../../../test/data")
 const {MatrixServerError} = require("../../matrix/mreq")
-const {select, discord} = require("../../passthrough")
+const {select, discord, db} = require("../../passthrough")
+const {tryToCatch} = require("try-to-catch")
 
 /**
  * @param {string} roomID
@@ -855,6 +856,40 @@ test("event2message: html lines are bridged correctly", async t => {
 	)
 })
 
+test("event2message: breaks between consecutive blockquotes are preserved", async t => {
+	t.deepEqual(
+		await eventToMessage({
+			type: "m.room.message",
+			sender: "@cadence:cadence.moe",
+			content: {
+				msgtype: "m.text",
+				body: "this was inspired by someone telling me\n\n>betrothed is an insane vocab pull\n\n> i think thats part of why im so scared of cadence\n\n> if an insult comes my way, not only do i not know when, but i'll have to humiliate myself and look it up",
+				format: "org.matrix.custom.html",
+				formatted_body: "<p>this was inspired by someone telling me</p>\n<blockquote>\n<p>betrothed is an insane vocab pull</p>\n</blockquote>\n<blockquote>\n<p>i think thats part of why im so scared of cadence</p>\n</blockquote>\n<blockquote>\n<p>if an insult comes my way, not only do i not know when, but i'll have to humiliate myself and look it up</p>\n</blockquote>"
+			},
+			origin_server_ts: 1783571303430,
+			event_id: "$cdltlkLTUp-ma2uYmLKy7o3RkDgpDbtdYfngST_igWE",
+			room_id: "!kLRqKKUQXcibIMtOpl:cadence.moe"
+		}),
+		{
+			ensureJoined: [],
+			messagesToDelete: [],
+			messagesToEdit: [],
+			messagesToSend: [{
+				allowed_mentions: {
+					parse: ["users", "roles"]
+				},
+				username: "cadence [they]",
+				avatar_url: "https://bridge.example.org/download/letter-avatar?letter=C&hue=90",
+				content: "this was inspired by someone telling me"
+					+ "\n\n> betrothed is an insane vocab pull"
+					+ "\n\n> i think thats part of why im so scared of cadence"
+					+ "\n\n> if an insult comes my way, not only do i not know when, but i'll have to humiliate myself and look it up"
+			}]
+		}
+	)
+})
+
 /*test("event2message: whitespace is retained", async t => {
 	t.deepEqual(
 		await eventToMessage({
@@ -1294,7 +1329,7 @@ test("event2message: characters are encoded properly in code blocks", async t =>
 	)
 })
 
-test("event2message: quotes have an appropriate amount of whitespace", async t => {
+test("event2message: quotes have an appropriate amount of whitespace (br following)", async t => {
 	t.deepEqual(
 		await eventToMessage({
 			content: {
@@ -1328,23 +1363,57 @@ test("event2message: quotes have an appropriate amount of whitespace", async t =
 	)
 })
 
+test("event2message: quotes have an appropriate amount of whitespace (p following)", async t => {
+	t.deepEqual(
+		await eventToMessage({
+			content: {
+				msgtype: "m.text",
+				body: "wrong body",
+				format: "org.matrix.custom.html",
+				formatted_body: "<blockquote>\n<p>short story</p>\n</blockquote>\n<p>by whose standards? LOL</p><blockquote>\n<p>I basically went all the way back to childhood (which analysts always like you to do)</p>\n</blockquote>\n<p>laughed out loud</p>"
+			},
+			event_id: "$g07oYSZFWBkxohNEfywldwgcWj1hbhDzQ1sBAKvqOOU",
+			origin_server_ts: 1688301929913,
+			room_id: "!kLRqKKUQXcibIMtOpl:cadence.moe",
+			sender: "@cadence:cadence.moe",
+			type: "m.room.message",
+			unsigned: {
+				age: 405299
+			}
+		}),
+		{
+			ensureJoined: [],
+			messagesToDelete: [],
+			messagesToEdit: [],
+			messagesToSend: [{
+				username: "cadence [they]",
+				content: "> short story\nby whose standards? LOL\n\n> I basically went all the way back to childhood (which analysts always like you to do)\nlaughed out loud",
+				avatar_url: "https://bridge.example.org/download/letter-avatar?letter=C&hue=90",
+				allowed_mentions: {
+						parse: ["users", "roles"]
+				}
+			}]
+		}
+	)
+})
+
 test("event2message: lists have appropriate line breaks", async t => {
 	t.deepEqual(
 		await eventToMessage({
 			content: {
 				body: 'i am not certain what you mean by "already exists with as discord". my goals are\n' +
 					'* bridgeing specific channels with existing matrix rooms\n' +
-					'  * optionally maybe entire "servers"\n' +
+					'  * optionally maybe entire "guilds"\n' +
 					'* offering the bridge as a public service ',
 				format: 'org.matrix.custom.html',
 				formatted_body: '<p>i am not certain what you mean by "already exists with as discord". my goals are</p>\n' +
 					'<ul>\n' +
 					'<li>bridgeing specific channels with existing matrix rooms\n' +
 					'<ul>\n' +
-					'<li>optionally maybe entire "servers"</li>\n' +
+					'<li>optionally maybe entire "guilds"</li>\n' +
 					'</ul>\n' +
 					'</li>\n' +
-					'<li>offering the bridge as a public service</li>\n' +
+					'<li>offering the bridge as a public service \n\n</li>\n' +
 					'</ul>\n',
 				'm.mentions': {},
 				msgtype: 'm.text'
@@ -1359,7 +1428,7 @@ test("event2message: lists have appropriate line breaks", async t => {
 			messagesToEdit: [],
 			messagesToSend: [{
 				username: "Milan",
-				content: `i am not certain what you mean by "already exists with as discord". my goals are\n\n* bridgeing specific channels with existing matrix rooms\n  * optionally maybe entire "servers"\n* offering the bridge as a public service`,
+				content: `i am not certain what you mean by "already exists with as discord". my goals are\n\n* bridgeing specific channels with existing matrix rooms\n  * optionally maybe entire "guilds"\n* offering the bridge as a public service`,
 				avatar_url: "https://bridge.example.org/download/letter-avatar?letter=M&hue=210",
 				allowed_mentions: {
 					parse: ["roles"],
@@ -1631,6 +1700,63 @@ test("event2message: rich reply to a sim user, explicitly disabling mentions in 
 			messagesToSend: [{
 				username: "cadence [they]",
 				content: "-# > <:L1:1144820033948762203><:L2:1144820084079087647>https://discord.com/channels/112760669178241024/687028734322147344/1144865310588014633 <@111604486476181504>:"
+					+ " Slow news day."
+					+ "\nTesting this reply, ignore",
+				avatar_url: "https://bridge.example.org/download/matrix/cadence.moe/azCAhThKTojXSZJRoWwZmhvU?preset=avatar",
+				allowed_mentions: {
+					parse: ["roles"],
+					users: []
+				}
+			}]
+		}
+	)
+})
+
+test("event2message: rich reply to a webhook with m.mentions", async t => {
+	t.deepEqual(
+		await eventToMessage({
+			"type": "m.room.message",
+			"sender": "@cadence:cadence.moe",
+			"content": {
+				"msgtype": "m.text",
+				"body": "> <@_ooye_webhook_spidey_bot:cadence.moe:cadence.moe> Slow news day.\n\nTesting this reply, ignore",
+				"format": "org.matrix.custom.html",
+				"formatted_body": "<mx-reply><blockquote><a href=\"https://matrix.to/#/!fGgIymcYWOqjbSRUdV:cadence.moe/$Fxy8SMoJuTduwReVkHZ1uHif9EuvNx36Hg79cltiA04?via=cadence.moe&via=feather.onl\">In reply to</a> <a href=\"https://matrix.to/#/@_ooye_webhook_spidey_bot:cadence.moe:cadence.moe\">@_ooye_webhook_spidey_bot:cadence.moe:cadence.moe</a><br>Slow news day.</blockquote></mx-reply>Testing this reply, ignore",
+				"m.relates_to": {
+					"m.in_reply_to": {
+						"event_id": "$Fxy8SMoJuTduwReVkHZ1uHif9EuvNx36Hg79cltiA04"
+					}
+				},
+				"m.mentions": {
+					user_ids: ["@_ooye_webhook_spidey_bot:cadence.moe"]
+				}
+			},
+			"origin_server_ts": 1693029683016,
+			"unsigned": {
+				"age": 91,
+				"transaction_id": "m1693029682894.510"
+			},
+			"event_id": "$v_Gtr-bzv9IVlSLBO5DstzwmiDd-GSFaNfHX66IupV8",
+			"room_id": "!fGgIymcYWOqjbSRUdV:cadence.moe"
+		}, data.guild.general, data.channel.general, {
+			api: {
+				getEvent: mockGetEvent(t, "!fGgIymcYWOqjbSRUdV:cadence.moe", "$Fxy8SMoJuTduwReVkHZ1uHif9EuvNx36Hg79cltiA04", {
+					type: "m.room.message",
+					content: {
+						msgtype: "m.text",
+						body: "Slow news day."
+					},
+					sender: "@_ooye_webhook_spidey_bot:cadence.moe"
+				})
+			}
+		}),
+		{
+			ensureJoined: [],
+			messagesToDelete: [],
+			messagesToEdit: [],
+			messagesToSend: [{
+				username: "cadence [they]",
+				content: "-# > <:L1:1144820033948762203><:L2:1144820084079087647>https://discord.com/channels/112760669178241024/687028734322147344/1144865310588014633 **@Spidey Bot**:"
 					+ " Slow news day."
 					+ "\nTesting this reply, ignore",
 				avatar_url: "https://bridge.example.org/download/matrix/cadence.moe/azCAhThKTojXSZJRoWwZmhvU?preset=avatar",
@@ -2049,6 +2175,57 @@ test("event2message: should suppress embeds for links in reply preview", async t
 	)
 })
 
+test("event2message: truncated links in reply preview should be unlinked to prevent broken links", async t => {
+	t.deepEqual(
+		await eventToMessage({
+			type: "m.room.message",
+			sender: "@cadence:cadence.moe",
+			content: {
+				msgtype: "m.text",
+				body: `> <@_ooye_.wing.:cadence.moe> https://huggingface.co/blog/security-incident-july-2026\n\nthis is either written by claude or somebody who's too claude-brained and I just can't get through it`,
+				format: "org.matrix.custom.html",
+				formatted_body: `<mx-reply><blockquote><a href="https://matrix.to/#/!fGgIymcYWOqjbSRUdV:cadence.moe/$qmyjr-ISJtnOM5WTWLI0fT7uSlqRLgpyin2d2NCglCU?via=cadence.moe">In reply to</a> <a href="https://matrix.to/#/@_ooye_.wing.:cadence.moe">@_ooye_.wing.:cadence.moe</a><br>https://huggingface.co/blog/security-incident-july-2026</blockquote></mx-reply>this is either written by claude or somebody who's too claude-brained and I just can't get through it`,
+				"m.relates_to": {
+					"m.in_reply_to": {
+						event_id: "$qmyjr-ISJtnOM5WTWLI0fT7uSlqRLgpyin2d2NCglCU"
+					}
+				}
+			},
+			event_id: "$0Bs3rbsXaeZmSztGMx1NIsqvOrkXOpIWebN-dqr09i4",
+			room_id: "!fGgIymcYWOqjbSRUdV:cadence.moe"
+		}, data.guild.general, data.channel.general, {
+			api: {
+				getEvent: mockGetEvent(t, "!fGgIymcYWOqjbSRUdV:cadence.moe", "$qmyjr-ISJtnOM5WTWLI0fT7uSlqRLgpyin2d2NCglCU", {
+					"type": "m.room.message",
+					"sender": "@_ooye_.wing.:cadence.moe",
+					"content": {
+						"m.mentions": {},
+						"msgtype": "m.text",
+						"body": "<https://huggingface.co/blog/security-incident-july-2026>",
+						"format": "org.matrix.custom.html",
+						"formatted_body": "<a href=\"https://huggingface.co/blog/security-incident-july-2026\">https://huggingface.co/blog/security-incident-july-2026</a>"
+					}
+				})
+			}
+		}),
+		{
+			ensureJoined: [],
+			messagesToDelete: [],
+			messagesToEdit: [],
+			messagesToSend: [{
+				username: "cadence [they]",
+				content: "-# > <:L1:1144820033948762203><:L2:1144820084079087647>https://discord.com/channels/112760669178241024/687028734322147344/1273204543739396116 <@112890272819507200>:"
+					+ " <via huggingface.co>..."
+					+ `\nthis is either written by claude or somebody who's too claude-brained and I just can't get through it`,
+				avatar_url: "https://bridge.example.org/download/matrix/cadence.moe/azCAhThKTojXSZJRoWwZmhvU?preset=avatar",
+				allowed_mentions: {
+					parse: ["users", "roles"]
+				}
+			}]
+		}
+	)
+})
+
 test("event2message: should include a reply preview when message ends with a blockquote", async t => {
 	t.deepEqual(
 		await eventToMessage({
@@ -2434,7 +2611,7 @@ test("event2message: reply preview ignores garbage image", async t => {
 				msgtype: "m.text",
 				body: "> <@cadence:cadence.moe> I am having AAAA a nice day\n\nreply",
 				format: "org.matrix.custom.html",
-				formatted_body: "<mx-reply><blockquote><a href=\"https://matrix.to/#/!TqlyQmifxGUggEmdBN:cadence.moe/$zmO-dtPO6FubBkDxJZ5YmutPIsG1RgV5JJku-9LeGWs?via=cadence.moe&via=matrix.org&via=conduit.rory.gay\">In reply to</a> <a href=\"https://matrix.to/#/@cadence:cadence.moe\">@cadence:cadence.moe</a><br>I am having <img src=\"mxc://cadence.moe/AAAA\" /> a nice day</blockquote></mx-reply>reply",
+				formatted_body: "<mx-reply><blockquote><a href=\"https://matrix.to/#/!TqlyQmifxGUggEmdBN:cadence.moe/$zmO-dtPO6FubBkDxJZ5YmutPIsG1RgV5JJku-9LeGWs?via=cadence.moe&via=matrix.org&via=conduit.rory.gay\">In reply to</a> <a href=\"https://matrix.to/#/@cadence:cadence.moe\">@cadence:cadence.moe</a><br>I am having <img src=\"mxc://cadence.moe/AAAA\" alt=\"AAAA\" title=\"AAAA\" /> a nice day</blockquote></mx-reply>reply",
 				"m.relates_to": {
 					"m.in_reply_to": {
 						event_id: "$zmO-dtPO6FubBkDxJZ5YmutPIsG1RgV5JJku-9LeGWs"
@@ -2464,7 +2641,7 @@ test("event2message: reply preview ignores garbage image", async t => {
 			messagesToSend: [{
 				username: "cadence [they]",
 				content: "-# > <:L1:1144820033948762203><:L2:1144820084079087647>**Ⓜcadence [they]**:"
-					+ " I am having  a nice day"
+					+ " I am having a nice day"
 					+ "\nreply",
 				avatar_url: "https://bridge.example.org/download/letter-avatar?letter=C&hue=90",
 				allowed_mentions: {
@@ -2663,6 +2840,44 @@ test("event2message: editing a plaintext body message", async t => {
 			messagesToSend: []
 		}
 	)
+})
+
+test("event2message: editing somebody else's message is rejected", async t => {
+	const [error] = await tryToCatch(() => eventToMessage({
+		"type": "m.room.message",
+		"sender": "@cadence:cadence.moe",
+		"content": {
+			"msgtype": "m.text",
+			"body": " * unless?",
+			"m.new_content": {
+				"msgtype": "m.text",
+				"body": "unless?"
+			},
+			"m.relates_to": {
+				"rel_type": "m.replace",
+				"event_id": "$7LIdiJCEqjcWUrpzWzS8TELOlFfBEe4ytgS7zn2lbSs"
+			}
+		},
+		"origin_server_ts": 1693223873912,
+		"unsigned": {
+			"age": 42,
+			"transaction_id": "m1693223873796.842"
+		},
+		"event_id": "$KxGwvVNzNcmlVbiI2m5kX-jMFNi3Jle71-uu1j7P7vM",
+		"room_id": "!BnKuBPCvyfOkhcUjEu:cadence.moe"
+	}, data.guild.general, data.channel.general, {
+		api: {
+			getEvent: mockGetEvent(t, "!BnKuBPCvyfOkhcUjEu:cadence.moe", "$7LIdiJCEqjcWUrpzWzS8TELOlFfBEe4ytgS7zn2lbSs", {
+				type: "m.room.message",
+				sender: "@no:cadence.moe",
+				content: {
+					msgtype: "m.text",
+					body: "don't edit me",
+				}
+			})
+		}
+	}))
+	t.equal(error.message, "You tampered with that event to try to edit somebody else's message. Stop it!")
 })
 
 test("event2message: editing a plaintext message to be longer", async t => {
@@ -2887,7 +3102,7 @@ test("event2message: rich reply to a matrix user's long message with formatting"
 			messagesToSend: [{
 				username: "cadence [they]",
 				content: "-# > <:L1:1144820033948762203><:L2:1144820084079087647>https://discord.com/channels/112760669178241024/687028734322147344/1144865310588014633 **Ⓜcadence [they]**:"
-					+ " i should have a little happy test   list bold em..."
+					+ " i should have a little happy test list bold em..."
 					+ "\n**no you can't!!!**",
 				avatar_url: "https://bridge.example.org/download/matrix/cadence.moe/azCAhThKTojXSZJRoWwZmhvU?preset=avatar",
 				allowed_mentions: {
@@ -3208,6 +3423,7 @@ test("event2message: rich reply to a state event with no body", async t => {
 			api: {
 				getEvent: mockGetEvent(t, "!TqlyQmifxGUggEmdBN:cadence.moe", "$f-noT-d-Eo_Xgpc05Ww89ErUXku4NwKWYGHLzWKo1kU", {
 					type: "m.room.topic",
+					state_key: "",
 					sender: "@ampflower:matrix.org",
 					content: {
 						topic: "you're cute"
@@ -4640,6 +4856,39 @@ test("event2message: image attachments can have a formatted caption", async t =>
 	)
 })
 
+test("event2message: attachments have a generated filename if it was missing", async t => {
+	t.deepEqual(
+		await eventToMessage({
+			type: "m.room.message",
+			sender: "@cadence:cadence.moe",
+			content: {
+				body: "",
+				filename: "",
+				info: {
+					mimetype: "image/png",
+					size: 50832
+				},
+				msgtype: "m.image",
+				url: "mxc://agiadn.org/3SvzETkab3XBDM6HCMJxpOryIDxMO31j"
+			},
+			event_id: "$CXQy3Wmg1A-gL_xAesC1HQcQTEXwICLdSwwUx55FBTI",
+			room_id: "!BnKuBPCvyfOkhcUjEu:cadence.moe"
+		}),
+		{
+			ensureJoined: [],
+			messagesToDelete: [],
+			messagesToEdit: [],
+			messagesToSend: [{
+				username: "cadence [they]",
+				content: "",
+				avatar_url: "https://bridge.example.org/download/matrix/cadence.moe/azCAhThKTojXSZJRoWwZmhvU?preset=avatar",
+				attachments: [{id: "0", filename: "file.png"}],
+				pendingFiles: [{name: "file.png", mxc: "mxc://agiadn.org/3SvzETkab3XBDM6HCMJxpOryIDxMO31j"}]
+			}]
+		}
+	)
+})
+
 test("event2message: encrypted image attachments work", async t => {
 	t.deepEqual(
 		await eventToMessage({
@@ -5312,6 +5561,9 @@ test("event2message: @room converts to @everyone and is allowed when the room do
 			type: "m.room.message",
 			sender: "@cadence:cadence.moe",
 			content: {
+				"m.mentions": {
+					room: true
+				},
 				msgtype: "m.text",
 				body: "@room dinner's ready",
 			},
@@ -5354,7 +5606,189 @@ test("event2message: @room converts to @everyone and is allowed when the room do
 				content: "@everyone dinner's ready",
 				avatar_url: "https://bridge.example.org/download/letter-avatar?letter=C&hue=90",
 				allowed_mentions: {
-					parse: ["users", "roles", "everyone"]
+					users: [],
+					parse: ["roles", "everyone"]
+				}
+			}],
+			ensureJoined: []
+		}
+	)
+})
+
+test("event2message: @room converts to @everyone (formatted body with weird room link)", async t => {
+	let called = 0
+	t.deepEqual(
+		await eventToMessage({
+			content: {
+				body: "> can you\n@room",
+				format: "org.matrix.custom.html",
+				formatted_body: "<blockquote>can you<br><br></blockquote><br><a href=\"https://matrix.to/#/!WTLleupRlSKvXjokiB:krzak.org\">@room</a>",
+				"m.mentions": {
+					room: true
+				},
+				msgtype: "m.text"
+			},
+			event_id: "$lp26s6ARdYKSgipe1N4rBJymaO74zlkJxHb-dJws-vA",
+			origin_server_ts: 1791883507643,
+			room_id: "!kLRqKKUQXcibIMtOpl:cadence.moe",
+			sender: "@cadence:cadence.moe",
+			type: "m.room.message",
+			unsigned: {}
+		}, data.guild.general, data.channel.general, {
+			api: {
+				async getStateEvent(roomID, type, key) {
+					called++
+					t.equal(roomID, "!kLRqKKUQXcibIMtOpl:cadence.moe")
+					t.equal(type, "m.room.power_levels")
+					t.equal(key, "")
+					return {
+						users: {},
+						notifications: {
+							room: 0
+						}
+					}
+				},
+				async getStateEventOuter(roomID, type, key) {
+					t.equal(roomID, "!kLRqKKUQXcibIMtOpl:cadence.moe")
+					t.equal(type, "m.room.create")
+					t.equal(key, "")
+					return {
+						type: "m.room.create",
+						state_key: "",
+						sender: "@_ooye_bot:cadence.moe",
+						content: {
+							room_version: "11"
+						}
+					}
+				}
+			}
+		}),
+		{
+			messagesToDelete: [],
+			messagesToEdit: [],
+			messagesToSend: [{
+				username: "cadence [they]",
+				content: "> can you\n@everyone",
+				avatar_url: "https://bridge.example.org/download/letter-avatar?letter=C&hue=90",
+				allowed_mentions: {
+					users: [],
+					parse: ["roles", "everyone"]
+				}
+			}],
+			ensureJoined: []
+		}
+	)
+})
+
+test("event2message: @room is converted to a role in configured rooms", async t => {
+	let called = 0
+	t.deepEqual(
+		await eventToMessage({
+			type: "m.room.message",
+			sender: "@cadence:cadence.moe",
+			content: {
+				msgtype: "m.text",
+				body: "@room dinner's ready",
+			},
+			room_id: "!fGgIymcYWOqjbSRUdV:cadence.moe",
+			event_id: "$SiXetU9h9Dg-M9Frcw_C6ahnoXZ3QPZe3MVJR5tcB9A"
+		}, data.guild.general, data.channel.general, {
+			api: {
+				async getStateEvent(roomID, type, key) {
+					called++
+					t.equal(roomID, "!fGgIymcYWOqjbSRUdV:cadence.moe")
+					t.equal(type, "m.room.power_levels")
+					t.equal(key, "")
+					return {
+						users: {},
+						notifications: {
+							room: 0
+						}
+					}
+				},
+				async getStateEventOuter(roomID, type, key) {
+					t.equal(roomID, "!fGgIymcYWOqjbSRUdV:cadence.moe")
+					t.equal(type, "m.room.create")
+					t.equal(key, "")
+					return {
+						type: "m.room.create",
+						state_key: "",
+						sender: "@_ooye_bot:cadence.moe",
+						content: {
+							room_version: "11"
+						}
+					}
+				}
+			}
+		}),
+		{
+			messagesToDelete: [],
+			messagesToEdit: [],
+			messagesToSend: [{
+				username: "cadence [they]",
+				content: "<@&123456> dinner's ready",
+				avatar_url: "https://bridge.example.org/download/matrix/cadence.moe/azCAhThKTojXSZJRoWwZmhvU?preset=avatar",
+				allowed_mentions: {
+					parse: ["users", "roles"]
+				}
+			}],
+			ensureJoined: []
+		}
+	)
+})
+
+test("event2message: @room is not allowed with mismatched m.mentions", async t => {
+	let called = 0
+	t.deepEqual(
+		await eventToMessage({
+			type: "m.room.message",
+			sender: "@cadence:cadence.moe",
+			content: {
+				"m.mentions": {},
+				msgtype: "m.text",
+				body: "@room dinner's ready",
+			},
+			room_id: "!kLRqKKUQXcibIMtOpl:cadence.moe",
+			event_id: "$SiXetU9h9Dg-M9Frcw_C6ahnoXZ3QPZe3MVJR5tcB9A"
+		}, data.guild.general, data.channel.general, {
+			api: {
+				async getStateEvent(roomID, type, key) {
+					called++
+					t.equal(roomID, "!kLRqKKUQXcibIMtOpl:cadence.moe")
+					t.equal(type, "m.room.power_levels")
+					t.equal(key, "")
+					return {
+						users: {},
+						notifications: {
+							room: 0
+						}
+					}
+				},
+				async getStateEventOuter(roomID, type, key) {
+					t.equal(roomID, "!kLRqKKUQXcibIMtOpl:cadence.moe")
+					t.equal(type, "m.room.create")
+					t.equal(key, "")
+					return {
+						type: "m.room.create",
+						state_key: "",
+						sender: "@_ooye_bot:cadence.moe",
+						content: {
+							room_version: "11"
+						}
+					}
+				}
+			}
+		}),
+		{
+			messagesToDelete: [],
+			messagesToEdit: [],
+			messagesToSend: [{
+				username: "cadence [they]",
+				content: "@room dinner's ready",
+				avatar_url: "https://bridge.example.org/download/letter-avatar?letter=C&hue=90",
+				allowed_mentions: {
+					users: [],
+					parse: ["roles"]
 				}
 			}],
 			ensureJoined: []
@@ -5656,7 +6090,7 @@ test("event2message: com.beeper.per_message_profile overrides displayname and av
 			messagesToDelete: [],
 			messagesToEdit: [],
 			messagesToSend: [{
-				username: "Unstable Name",
+				username: "Unstable Name | cadence [they]",
 				content: "hello from unstable profile",
 				avatar_url: "https://bridge.example.org/download/matrix/maunium.net/hgXsKqlmRfpKvCZdUoWDkFQo?preset=avatar",
 				allowed_mentions: {
@@ -5689,7 +6123,7 @@ test("event2message: com.beeper.per_message_profile empty avatar_url clears avat
 			messagesToDelete: [],
 			messagesToEdit: [],
 			messagesToSend: [{
-				username: "No Avatar User",
+				username: "No Avatar User | cadence [they]",
 				content: "hello with cleared avatar",
 				avatar_url: "https://bridge.example.org/download/letter-avatar?letter=N&hue=90",
 				allowed_mentions: {
@@ -5725,7 +6159,7 @@ test("event2message: data-mx-profile-fallback element is stripped from formatted
 			messagesToDelete: [],
 			messagesToEdit: [],
 			messagesToSend: [{
-				username: "Tidus Herboren",
+				username: "Tidus Herboren | cadence [they]",
 				content: "one more test",
 				avatar_url: "https://bridge.example.org/download/matrix/maunium.net/hgXsKqlmRfpKvCZdUoWDkFQo?preset=avatar",
 				allowed_mentions: {
@@ -5758,9 +6192,60 @@ test("event2message: displayname prefix is stripped from plain body when per-mes
 			messagesToDelete: [],
 			messagesToEdit: [],
 			messagesToSend: [{
-				username: "Tidus Herboren",
+				username: "Tidus Herboren | cadence [they]",
 				content: "one more test",
 				avatar_url: "https://bridge.example.org/download/letter-avatar?letter=T&hue=90",
+				allowed_mentions: {
+					parse: ["users", "roles"]
+				}
+			}]
+		}
+	)
+})
+
+test("event2message: pronouns can be displayed with per-message profile", async t => {
+	t.deepEqual(
+		await eventToMessage({
+			type: "m.room.message",
+			sender: "@exa:sleeping.town",
+			content: {
+				msgtype: "m.text",
+				body: "Well, I can't really do it now...",
+				"com.beeper.per_message_profile": {
+					id: "Kryn",
+					displayname: "Kryn",
+					"eu.she-a.color": {
+						on_dark: "#FFCC00",
+						on_light: "#976800"
+					},
+					"io.fsky.nyx.pronouns": [{
+						language: "en",
+						summary: "fae/she"
+					}]
+				}
+			},
+			event_id: "$g07oYSZFWBkxohNEfywldwgcWj1hbhDzQ1sBAKvqOOU",
+			room_id: "!kLRqKKUQXcibIMtOpl:cadence.moe"
+		}, {}, {}, {
+			api: {
+				async getStateEvent(roomID, type, key) {
+					t.equal(type, "m.room.member")
+					t.equal(key, "@exa:sleeping.town")
+					return {
+						displayname: "Exa",
+						membership: "join"
+					}
+				}
+			}
+		}),
+		{
+			ensureJoined: [],
+			messagesToDelete: [],
+			messagesToEdit: [],
+			messagesToSend: [{
+				username: "Kryn (fae/she) | Exa",
+				content: "Well, I can't really do it now...",
+				avatar_url: "https://bridge.example.org/download/letter-avatar?letter=K&hue=150",
 				allowed_mentions: {
 					parse: ["users", "roles"]
 				}

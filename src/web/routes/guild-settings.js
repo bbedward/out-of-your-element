@@ -6,8 +6,8 @@ const {defineEventHandler, createError, readValidatedBody, getRequestHeader, set
 
 const {as, db, sync, select, discord} = require("../../passthrough")
 
-/** @type {import("../auth")} */
-const auth = sync.require("../auth")
+/** @type {import("../web-utils")} */
+const webUtils = sync.require("../web-utils")
 /** @type {import("../pug-sync")} */
 const pugSync = sync.require("../pug-sync")
 /** @type {import("../../d2m/actions/set-presence")} */
@@ -50,13 +50,14 @@ function defineToggle(key, inputOptions) {
 	}
 	Object.assign(options, inputOptions)
 	return defineEventHandler(async event => {
+		webUtils.rejectCrossSiteRequest(event)
 		const bodySchema = z.object({
 			guild_id: z.string(),
 			[key]: z.string().optional()
 		})
 		/** @type {Record<T, string?> & Record<"guild_id", string> & Record<string, unknown>} */ // @ts-ignore
 		const parsedBody = await readValidatedBody(event, bodySchema.parse)
-		const managed = await auth.getManagedGuilds(event)
+		const managed = await webUtils.getManagedGuilds(event)
 		if (!managed.has(parsedBody.guild_id)) throw createError({status: 403, message: "Forbidden", data: "Can't change settings for a guild you don't have Manage Server permissions in"})
 
 		const value = options.transform(parsedBody[key])
@@ -106,9 +107,10 @@ as.router.post("/api/privacy-level", defineToggle("privacy_level", {
 }))
 
 as.router.post("/api/default-roles", defineEventHandler(async event => {
+	webUtils.rejectCrossSiteRequest(event)
 	const parsedBody = await readValidatedBody(event, schema.defaultRoles.parse)
 
-	const managed = await auth.getManagedGuilds(event)
+	const managed = await webUtils.getManagedGuilds(event)
 	const guildID = parsedBody.guild_id
 	if (!managed.has(guildID)) throw createError({status: 403, message: "Forbidden", data: "Can't change settings for a guild you don't have Manage Server permissions in"})
 
@@ -135,8 +137,28 @@ as.router.post("/api/default-roles", defineEventHandler(async event => {
 	await createSpace.syncSpaceFully(guildID) // this is inefficient but OK to call infrequently on user request
 
 	if (getRequestHeader(event, "HX-Request")) {
-		return pugSync.render(event, "fragments/default-roles-list.pug", {guild, guild_id: guildID})
+		return pugSync.renderFragments(event, "guild.pug", ["default-roles-list", "add-roles-menu"], {guild, guild_id: guildID})
 	} else {
 		return sendRedirect(event, `/guild?guild_id=${guildID}`, 302)
 	}
+}))
+
+// An empty role restores @everyone
+as.router.post("/api/room-mention-role", defineEventHandler(async event => {
+	webUtils.rejectCrossSiteRequest(event)
+	const body = await readValidatedBody(event, z.object({
+		guild_id: z.string(),
+		channel_id: z.string(),
+		room_mention_role: z.string().regex(/^(?:[0-9]+)?$/)
+	}).parse)
+	const managed = await webUtils.getManagedGuilds(event)
+	if (!managed.has(body.guild_id)) throw createError({status: 403, message: "Forbidden", data: "Can't change settings for a guild you don't have Manage Server permissions in"})
+	const room = select("channel_room", "room_id", {channel_id: body.channel_id, guild_id: body.guild_id}).get()
+	if (!room) throw createError({status: 404, message: "Linked channel not found"})
+	const guild = discord.guilds.get(body.guild_id)
+	if (body.room_mention_role && (!guild?.roles.some(role => role.id === body.room_mention_role) || body.room_mention_role === body.guild_id)) {
+		throw createError({status: 400, message: "Choose a role from this server"})
+	}
+	db.prepare("UPDATE channel_room SET room_mention_role = ? WHERE channel_id = ? AND guild_id = ?").run(body.room_mention_role || null, body.channel_id, body.guild_id)
+	return sendRedirect(event, `/guild?guild_id=${body.guild_id}#room-notifications`, 302)
 }))

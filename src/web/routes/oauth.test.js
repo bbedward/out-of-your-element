@@ -14,7 +14,7 @@ test("web oauth: redirects to Discord on first visit (add easy)", async t => {
 		}
 	})
 	t.equal(event.node.res.statusCode, 302)
-	t.match(event.node.res.getHeader("location"), /^https:\/\/discord.com\/oauth2\/authorize\?client_id=684280192553844747&scope=bot\+guilds&permissions=2251801424568320&response_type=code&redirect_uri=https:\/\/bridge\.example\.org\/oauth&state=/)
+	t.match(event.node.res.getHeader("location"), /^https:\/\/discord.com\/oauth2\/authorize\?client_id=684280192553844747&scope=bot\+identify\+guilds&permissions=2251801424568320&response_type=code&redirect_uri=https:\/\/bridge\.example\.org\/oauth&state=/)
 })
 
 test("web oauth: redirects to Discord on first visit (add self service)", async t => {
@@ -26,7 +26,18 @@ test("web oauth: redirects to Discord on first visit (add self service)", async 
 		}
 	})
 	t.equal(event.node.res.statusCode, 302)
-	t.match(event.node.res.getHeader("location"), /^https:\/\/discord.com\/oauth2\/authorize\?client_id=684280192553844747&scope=bot\+guilds&permissions=2251801424568320&response_type=code&redirect_uri=https:\/\/bridge\.example\.org\/oauth&state=/)
+	t.match(event.node.res.getHeader("location"), /^https:\/\/discord.com\/oauth2\/authorize\?client_id=684280192553844747&scope=bot\+identify\+guilds&permissions=2251801424568320&response_type=code&redirect_uri=https:\/\/bridge\.example\.org\/oauth&state=/)
+})
+
+test("web oauth: checks that next query parameter is local", async t => {
+	let event = {}
+	const [e] = await tryToCatch(() => router.test("get", "/oauth?action=add-self-service&next=https://evil.com", {
+		event,
+		sessionData: {
+			password: "password123"
+		}
+	}))
+	t.equal(e.data, `Invalid next URL "https://evil.com", it's on the wrong domain`)
 })
 
 test("web oauth: advises user about cookies if state is missing", async t => {
@@ -71,6 +82,11 @@ test("web oauth: uses returned state, logs in", async t => {
 		getClient(accessToken) {
 			return {
 				user: {
+					async getSelf() {
+						return {
+							id: "1"
+						}
+					},
 					async getGuilds() {
 						return [{
 							id: "9",
@@ -106,6 +122,11 @@ test("web oauth: uses returned state, adds managed guild", async t => {
 		getClient(accessToken) {
 			return {
 				user: {
+					async getSelf() {
+						return {
+							id: "1"
+						}
+					},
 					async getGuilds() {
 						return [{
 							id: "9",

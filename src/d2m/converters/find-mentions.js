@@ -1,8 +1,9 @@
 // @ts-check
 
-const assert = require("assert")
-
 const {reg} = require("../../matrix/read-registration")
+const {sync} = require("../../passthrough")
+/** @type {import("../../matrix/utils")} */
+const mxUtils = sync.require("../../matrix/utils")
 const userRegex = reg.namespaces.users.map(u => new RegExp(u.regex))
 
 /**
@@ -107,16 +108,15 @@ function tokenise(name) {
  * @returns {ProcessedJoined}
  */
 function processJoined(joined) {
-	joined = joined.filter(j => !userRegex.some(rx => j.mxid.match(rx)))
 	return {
-		mxids: joined.map(j => {
-			const localpart = j.mxid.match(/@([^:]*)/)
-			assert(localpart)
-			return {
-				localpart: localpart[1].toLowerCase(),
+		mxids: joined.flatMap(j => {
+			const parsed = mxUtils.parseMxid(j.mxid)
+			if (!parsed) return []
+			return [{
+				localpart: parsed.localpart.toLowerCase(),
 				mxid: j.mxid,
 				displayname: j.displayname
-			}
+			}]
 		}),
 		names: joined.filter(j => j.displayname).map(j => {
 			return {
@@ -141,8 +141,14 @@ function findMention(pjr, maximumWrittenSection, baseOffset, prefix, content) {
 	/** @type {{mxid: string, scored: {score: number, matchedInputTokens: Token[]}}[]} */
 	let allItems = pjr.mxids.map(mxid => ({...mxid, scored: scoreLocalpart(mxid.localpart, maximumWrittenSection, mxid.displayname)}))
 	allItems = allItems.concat(pjr.names.map(name => ({...name, scored: scoreName(name.displaynameTokens, maximumWrittenSectionTokens)})))
-	const best = allItems.sort((a, b) => b.scored.score - a.scored.score)[0]
-	if (best.scored.score > 4) { // requires in smallest case perfect match of 2 characters, or in largest case a partial middle match of 5+ characters in a row
+	// Tiebreaker bonus for Matrix users
+	for (const item of allItems) {
+		if (!userRegex.some(rx => item.mxid.match(rx))) item.scored.score += 1
+	}
+	const [best, secondBest] = allItems.sort((a, b) => b.scored.score - a.scored.score)
+	if (userRegex.some(rx => best.mxid.match(rx))) return // Discord user was best match, so it was just a written non-pinging @ for a Discord user. Don't highlight a Matrix user.
+	if (secondBest && secondBest.scored.score === best.scored.score) return // all tied up
+	if (best.scored.score > 5) { // requires in smallest case Matrix user tiebreaker + perfect match of 2 characters, or in largest case a partial middle match of 5+ characters in a row
 		// Highlight the relevant part of the message
 		const start = baseOffset + best.scored.matchedInputTokens[0].index
 		const end = baseOffset + prefix.length + best.scored.matchedInputTokens.slice(-1)[0].end

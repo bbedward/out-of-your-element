@@ -18,10 +18,14 @@ const lottie = sync.require("../actions/lottie")
 const mxUtils = sync.require("../../matrix/utils")
 /** @type {import("../../discord/utils")} */
 const dUtils = sync.require("../../discord/utils")
+/** @type {import("../../discord/time")} */
+const discordTime = sync.require("../../discord/time")
 /** @type {import("./find-mentions")} */
 const findMentions = sync.require("./find-mentions")
 /** @type {import("../../discord/interactions/poll-responses")} */
 const pollResponses = sync.require("../../discord/interactions/poll-responses")
+/** @type {import("../actions/speedbump")} */
+const speedbump = sync.require("../actions/speedbump")
 const {reg} = require("../../matrix/read-registration")
 
 /**
@@ -42,22 +46,22 @@ function getDiscordParseCallbacks(message, guild, useHTML, spoilers = []) {
 				|| (message.author?.id === node.id ? message.author.username : null)
 				|| "unknown-user"
 			if (mxid && useHTML) {
-				return `<a href="https://matrix.to/#/${mxid}">@${username}</a>`
+				return tag`<a href="https://matrix.to/#/${mxid}">@${username}</a>`
 			} else {
-				return `@${username}:`
+				return useHTML ? tag`@${username}:` : `@${username}:`
 			}
 		},
 		/** @param {{id: string, type: "discordChannel", row: {room_id: string, name: string, nick: string?}?, via: string}} node */
 		channel: node => {
 			if (!node.row) { // fallback for when this channel is not bridged
 				const channel = discord.channels.get(node.id)
-				if (channel) {
-					return `#${channel.name} [channel not bridged]`
+				if (channel?.name) {
+					return useHTML ? tag`#${channel.name} [channel not bridged]` : `#${channel.name} [channel not bridged]`
 				} else {
 					return `#unknown-channel [channel from an unbridged server]`
 				}
 			} else if (useHTML) {
-				return `<a href="https://matrix.to/#/${node.row.room_id}?${node.via}">#${node.row.nick || node.row.name}</a>`
+				return tag`<a href="https://matrix.to/#/${node.row.room_id}?$${node.via}">#${node.row.nick || node.row.name}</a>`
 			} else {
 				return `#${node.row.nick || node.row.name}`
 			}
@@ -72,6 +76,22 @@ function getDiscordParseCallbacks(message, guild, useHTML, spoilers = []) {
 				return `:${node.name}:`
 			}
 		},
+		/** @param {{timestamp: number, style: string | null}} node */
+		timestamp: node => {
+			const text = discordTime.convertDiscordTime(node.timestamp, node.style)
+			if (useHTML) {
+				let url = `${reg.ooye.bridge_origin}/time/${node.timestamp}`
+				let dataStyle = ""
+				if (node.style) {
+					url += `/${node.style}`
+					dataStyle = tag`data-style="${node.style}" `
+				}
+				const iso = new Date(node.timestamp * 1000).toISOString()
+				return tag`<a href="${url}"><time $${dataStyle}datetime="${iso}">${text}</time></a>`
+			} else {
+				return text
+			}
+		},
 		role: node => {
 			const role = guild.roles.find(r => r.id === node.id)
 			if (!role) {
@@ -79,11 +99,21 @@ function getDiscordParseCallbacks(message, guild, useHTML, spoilers = []) {
 				// If the cache breaks, fix discord-packets.js to store role info properly.
 				return "@&" + node.id
 			} else if (useHTML && role.color) {
-				return `<font color="#${role.color.toString(16)}">@${role.name}</font>`
+				return tag`<font color="#${role.color.toString(16)}">@${role.name}</font>`
 			} else if (useHTML) {
-				return `<span data-mx-color="#ffffff" data-mx-bg-color="#414eef">@${role.name}</span>`
+				return tag`<span data-mx-color="#ffffff" data-mx-bg-color="#414eef">@${role.name}</span>`
 			} else {
 				return `@${role.name}:`
+			}
+		},
+		game: node => {
+			const game = message.mention_games?.find(g => g.id === node.id)
+			if (!game?.name) {
+				return "@$" + node.id
+			} else if (useHTML) {
+				return tag`${game.name}`
+			} else {
+				return game.name
 			}
 		},
 		everyone: () => {
@@ -109,11 +139,11 @@ const embedTitleParser = markdown.markdownEngine.parserFor({
 
 /**
  * @param {{room?: boolean, user_ids?: string[]}} mentions
- * @param {Omit<DiscordTypes.APIAttachment, "id" | "proxy_url" | "flags">} attachment
+ * @param {Omit<DiscordTypes.APIAttachment, "id" | "proxy_url"> & {proxy_url?: string}} attachment
  * @param {boolean} [alwaysLink]
+ * @param {{fetch?: typeof fetch}} [di]
  */
-async function attachmentToEvent(mentions, attachment, alwaysLink) {
-	const external_url = dUtils.getPublicUrlForCdn(attachment.url)
+async function attachmentToEvent(mentions, attachment, alwaysLink, di) {
 	const emoji =
 		attachment.content_type?.startsWith("image/jp") ? "📸"
 		: attachment.content_type?.startsWith("image/") ? "🖼️"
@@ -121,34 +151,66 @@ async function attachmentToEvent(mentions, attachment, alwaysLink) {
 		: attachment.content_type?.startsWith("text/") ? "📝"
 		: attachment.content_type?.startsWith("audio/") ? "🎶"
 		: "📄"
-	// no native media spoilers in Element, so we'll post a link instead, forcing it to not preview using a blockquote
-	if (attachment.filename.startsWith("SPOILER_")) {
+	// no native media spoilers in Element, so we'll post an unpreviewable link instead
+	const spoiler = attachment.filename.startsWith("SPOILER_") || !!((attachment.flags || 0) & DiscordTypes.AttachmentFlags.IsSpoiler);
+	const externalURL = dUtils.getPublicUrlForCdn(attachment.url, spoiler)
+	if (spoiler) {
 		return {
 			$type: "m.room.message",
 			"m.mentions": mentions,
 			msgtype: "m.text",
-			body: `${emoji} Uploaded SPOILER file: ${external_url} (${pb(attachment.size)})`,
+			body: `${emoji} Uploaded SPOILER file: ${externalURL} (${pb(attachment.size)})`,
 			format: "org.matrix.custom.html",
-			formatted_body: `<blockquote>${emoji} Uploaded SPOILER file: <a href="${external_url}">${external_url}</a> (${pb(attachment.size)})</blockquote>`
+			formatted_body: `${emoji} Uploaded <strong>SPOILER</strong> file: <a href="${externalURL}">${externalURL}</a> (${pb(attachment.size)})`
+		}
+	}
+	// attempt to convert large PNG image files to WebP, since it's almost certainly a photo that was forced into PNG by the user copy-pasting.
+	if (
+		attachment.content_type === "image/png" && attachment.size > reg.ooye.max_file_size
+		&& !alwaysLink && attachment.proxy_url && attachment.width && attachment.height && di?.fetch
+	) {
+		const proxyUrl = new URL(attachment.proxy_url)
+		proxyUrl.searchParams.set("format", "webp")
+		const webpUrl = proxyUrl.toString()
+		const res = await di.fetch(webpUrl, {method: "HEAD"})
+		const newFilename = attachment.filename.replace(/\.png$/, ".webp")
+		const newSize = Number(res.headers.get("content-length"))
+		if (res.ok && res.headers.get("content-type") === "image/webp" && !res.headers.has("content-encoding") && newSize <= reg.ooye.max_file_size) {
+			return {
+				$type: "m.room.message",
+				"m.mentions": mentions,
+				msgtype: "m.image",
+				url: await file.uploadDiscordFileToMxc(webpUrl),
+				external_url: externalURL,
+				body: attachment.description || newFilename,
+				filename: newFilename,
+				info: {
+					mimetype: "image/webp",
+					w: attachment.width,
+					h: attachment.height,
+					size: newSize
+				}
+			}
 		}
 	}
 	// for large files, always link them instead of uploading so I don't use up all the space in the content repo
-	else if (alwaysLink || attachment.size > reg.ooye.max_file_size) {
+	if (alwaysLink || attachment.size > reg.ooye.max_file_size) {
 		return {
 			$type: "m.room.message",
 			"m.mentions": mentions,
 			msgtype: "m.text",
-			body: `${emoji} Uploaded file: ${external_url} (${pb(attachment.size)})`,
+			body: `${emoji} Uploaded file: ${externalURL} (${pb(attachment.size)})`,
 			format: "org.matrix.custom.html",
-			formatted_body: `${emoji} Uploaded file: <a href="${external_url}">${attachment.filename}</a> (${pb(attachment.size)})`
+			formatted_body: tag`${emoji} Uploaded file: <a href="${externalURL}">${attachment.filename}</a> (${pb(attachment.size)})`
 		}
-	} else if (attachment.content_type?.startsWith("image/") && attachment.width && attachment.height) {
+	}
+	if (attachment.content_type?.startsWith("image/") && attachment.width && attachment.height) {
 		return {
 			$type: "m.room.message",
 			"m.mentions": mentions,
 			msgtype: "m.image",
 			url: await file.uploadDiscordFileToMxc(attachment.url),
-			external_url,
+			external_url: externalURL,
 			body: attachment.description || attachment.filename,
 			filename: attachment.filename,
 			info: {
@@ -158,13 +220,14 @@ async function attachmentToEvent(mentions, attachment, alwaysLink) {
 				size: attachment.size
 			}
 		}
-	} else if (attachment.content_type?.startsWith("video/") && attachment.width && attachment.height) {
+	}
+	if (attachment.content_type?.startsWith("video/") && attachment.width && attachment.height) {
 		return {
 			$type: "m.room.message",
 			"m.mentions": mentions,
 			msgtype: "m.video",
 			url: await file.uploadDiscordFileToMxc(attachment.url),
-			external_url,
+			external_url: externalURL,
 			body: attachment.description || attachment.filename,
 			filename: attachment.filename,
 			info: {
@@ -174,13 +237,14 @@ async function attachmentToEvent(mentions, attachment, alwaysLink) {
 				size: attachment.size
 			}
 		}
-	} else if (attachment.content_type?.startsWith("audio/")) {
+	}
+	if (attachment.content_type?.startsWith("audio/")) {
 		return {
 			$type: "m.room.message",
 			"m.mentions": mentions,
 			msgtype: "m.audio",
 			url: await file.uploadDiscordFileToMxc(attachment.url),
-			external_url,
+			external_url: externalURL,
 			body: attachment.description || attachment.filename,
 			filename: attachment.filename,
 			info: {
@@ -189,19 +253,19 @@ async function attachmentToEvent(mentions, attachment, alwaysLink) {
 				duration: attachment.duration_secs && Math.round(attachment.duration_secs * 1000)
 			}
 		}
-	} else {
-		return {
-			$type: "m.room.message",
-			"m.mentions": mentions,
-			msgtype: "m.file",
-			url: await file.uploadDiscordFileToMxc(attachment.url),
-			external_url,
-			body: attachment.description || attachment.filename,
-			filename: attachment.filename,
-			info: {
-				mimetype: attachment.content_type,
-				size: attachment.size
-			}
+	}
+	// else
+	return {
+		$type: "m.room.message",
+		"m.mentions": mentions,
+		msgtype: "m.file",
+		url: await file.uploadDiscordFileToMxc(attachment.url),
+		external_url: externalURL,
+		body: attachment.description || attachment.filename,
+		filename: attachment.filename,
+		info: {
+			mimetype: attachment.content_type,
+			size: attachment.size
 		}
 	}
 }
@@ -253,11 +317,11 @@ async function pollToEvent(poll) {
  */
 function getFormattedInteraction(interaction, isThinkingInteraction) {
 	const mxid = select("sim", "mxid", {user_id: interaction.user.id}).pluck().get()
-	const username = interaction.member?.nick || interaction.user.global_name || interaction.user.username
+	const name = interaction.member?.nick || interaction.user.global_name || interaction.user.username
 	const thinkingText = isThinkingInteraction ? " — interaction loading..." : ""
 	return {
-		body: `❭ ${username} used \`/${interaction.name}\`${thinkingText}`,
-		html: `<blockquote><sub>❭ ${mxid ? tag`<a href="https://matrix.to/#/${mxid}">${username}</a>` : username} used <code>/${interaction.name}</code>${thinkingText}</sub></blockquote>`
+		body: `❭ ${name} used \`/${interaction.name}\`${thinkingText}`,
+		html: tag`<blockquote><sub>❭ $${mxid ? tag`<a href="https://matrix.to/#/${mxid}">${name}</a>` : tag`${name}`} used <code>/${interaction.name}</code>${thinkingText}</sub></blockquote>`
 	}
 }
 
@@ -279,6 +343,7 @@ function mergeTextEvents(newEvents, events, forceSameMsgtype, forceMerge = false
 			rep.addLine(ne.body, ne.formatted_body)
 			prev.body = rep.body
 			prev.formatted_body = rep.formattedBody
+			if (Array.isArray(prev["m.url_previews"]) && Array.isArray(ne["m.url_previews"])) prev["m.url_previews"].push(...ne["m.url_previews"])
 		} else if (forceMerge) {
 			throw new Error("Unable to merge events")
 		} else {
@@ -295,7 +360,7 @@ function mergeTextEvents(newEvents, events, forceSameMsgtype, forceMerge = false
  * - includeEditFallbackStar: false
  * - alwaysReturnFormattedBody: false - formatted_body will be skipped if it is the same as body because the message is plaintext. if you want the formatted_body to be returned anyway, for example to merge it with another message, then set this to true.
  * - scanTextForMentions: true - needs to be set to false when converting forwarded messages etc which may be from a different channel that can't be scanned.
- * @param {{api: import("../../matrix/api"), snow?: import("snowtransfer").SnowTransfer}} di simple-as-nails dependency injection for the matrix API
+ * @param {{api: import("../../matrix/api"), snow?: import("snowtransfer").SnowTransfer, fetch?: typeof fetch}} di simple-as-nails dependency injection for the matrix API
  * @returns {Promise<{$type: string, $sender?: string, [x: string]: any}[]>}
  */
 async function messageToEvent(message, guild, options = {}, di) {
@@ -446,7 +511,7 @@ async function messageToEvent(message, guild, options = {}, di) {
 						content: emulatedMessageContent,
 						// @ts-ignore
 						author: {
-							username: message.embeds[0].author.name.replace(/\s*↩️\s*$/, "")
+							username: message.embeds[0].author.name.replace(/\s{,3}↩️\s*$/, "")
 						}
 					}
 					message.embeds.shift()
@@ -513,7 +578,7 @@ async function messageToEvent(message, guild, options = {}, di) {
 	 */
 	async function transformContentMessageLinks(content) {
 		let offset = 0
-		for (const match of [...content.matchAll(/https:\/\/(?:ptb\.|canary\.|www\.)?discord(?:app)?\.com\/channels\/[0-9]+\/([0-9]+)\/([0-9]+)/g)]) {
+		for (const match of [...content.matchAll(/\bhttps:\/\/(?:ptb\.|canary\.|www\.)?discord(?:app)?\.com\/channels\/[0-9]+\/([0-9]+)\/([0-9]+)/g)]) {
 			assert(typeof match.index === "number")
 			const [_, channelID, messageID] = match
 			const result = await (async () => {
@@ -549,10 +614,11 @@ async function messageToEvent(message, guild, options = {}, di) {
 		content = transformAttachmentLinks(content)
 		content = await transformContentMessageLinks(content)
 
-		// Remove smalltext from non-bots (I don't like it). Webhooks included due to PluralKit.
+		// Remove smalltext from non-bots (I don't like it).
 		const isHumanOrDataMissing = !message.author?.bot
-		if (isHumanOrDataMissing || dUtils.isWebhookMessage(message)) {
-			content = content.replaceAll(/^-# +([^\n].*?)/gm, "...$1")
+		const isProxyOrHumanOrDataMissing = message.webhook_id ? speedbump.sentByProxyWebhook(message) : isHumanOrDataMissing
+		if (isProxyOrHumanOrDataMissing) {
+			content = content.replaceAll(/^-# +([([])?([^\n].*?)/gm, "$1...$2")
 		}
 
 		// Handling emojis that we don't know about. The emoji has to be present in the DB for it to be picked up in the emoji markdown converter.
@@ -633,18 +699,18 @@ async function messageToEvent(message, guild, options = {}, di) {
 	 * @param {string} body matrix event plaintext body
 	 * @param {string} html matrix event HTML body
 	 * @param {string} msgtype matrix event msgtype (maybe m.text or m.notice)
+	 * @param {{urlPreviews?: any}} eventOptions
 	 */
-	async function addTextEvent(body, html, msgtype) {
+	async function addTextEvent(body, html, msgtype, eventOptions = {}) {
 		// Star * prefix for fallback edits
 		if (options.includeEditFallbackStar) {
 			body = "* " + body
 			html = "* " + html
 		}
 
-		const flags = message.flags || 0
-		if (flags & DiscordTypes.MessageFlags.IsCrosspost) {
+		if (((message.flags || 0) & DiscordTypes.MessageFlags.IsCrosspost) && message.author?.username) {
 			body = `[↷ ${message.author.username}]\n` + body
-			html = `↷ <strong>${message.author.username}</strong><br>` + html
+			html = tag`↷ <strong>${message.author.username}</strong><br>` + html
 		}
 
 		// Fallback body/formatted_body for replies
@@ -669,13 +735,11 @@ async function messageToEvent(message, guild, options = {}, di) {
 				let repliedToDisplayName
 				let repliedToUserHtml
 				if (repliedToEventRow?.source === 0 && repliedToEventSenderMxid) {
-					const match = repliedToEventSenderMxid.match(/^@([^:]*)/)
-					assert(match)
-					repliedToDisplayName = referenced.author.username || match[1] || "a Matrix user" // grab the localpart as the display name, whatever
+					repliedToDisplayName = referenced.author.username || mxUtils.parseMxid(repliedToEventSenderMxid)?.localpart || "a Matrix user" // grab the localpart as the display name, whatever
 					repliedToUserHtml = tag`<a href="https://matrix.to/#/${repliedToEventSenderMxid}">${repliedToDisplayName}</a>`
 				} else {
 					repliedToDisplayName = referenced.author.global_name || referenced.author.username || "a Discord user"
-					repliedToUserHtml = repliedToDisplayName
+					repliedToUserHtml = tag`${repliedToDisplayName}`
 				}
 
 				// Content
@@ -705,7 +769,7 @@ async function messageToEvent(message, guild, options = {}, di) {
 					body = `> ${repliedToDisplayName} joined the room\n\n` + body
 				} else { // repliedToUnknownEvent
 					const dateDisplay = dUtils.howOldUnbridgedMessage(referenced.timestamp, message.timestamp)
-					html = `<blockquote>In reply to ${dateDisplay} from ${repliedToDisplayName}:`
+					html = tag`<blockquote>In reply to ${dateDisplay} from ${repliedToDisplayName}:`
 						+ `<br>${repliedToHtml}</blockquote>`
 						+ html
 					body = `In reply to ${dateDisplay}:\n${repliedToDisplayName}: ${repliedToBody}`.split("\n").map(line => "> " + line).join("\n")
@@ -726,7 +790,13 @@ async function messageToEvent(message, guild, options = {}, di) {
 			msgtype,
 			body: body,
 			format: "org.matrix.custom.html",
-			formatted_body: html
+			formatted_body: html,
+		}
+
+		if (!eventOptions.urlPreviews) {
+			newTextMessageEvent["m.url_previews"] = []
+		} else if (Array.isArray(eventOptions.urlPreviews)) {
+			newTextMessageEvent["m.url_previews"] = eventOptions.urlPreviews
 		}
 
 		events.push(newTextMessageEvent)
@@ -751,11 +821,12 @@ async function messageToEvent(message, guild, options = {}, di) {
 	}
 
 	// Send Klipy GIFs in customised form
+	const urlPreviewEnabled = select("guild_space", "url_preview", {guild_id: guild?.id}).pluck().get() ?? 1
 	let isKlipyGIF = false
 	let isOnlyKlipyGIF = false
-	if (message.embeds?.length === 1 && message.embeds[0].provider?.name === "Klipy" && message.embeds[0].video?.url) {
+	if (message.embeds?.length === 1 && message.embeds[0].provider?.name === "Klipy" && message.embeds[0].video?.url && urlPreviewEnabled) {
 		isKlipyGIF = true
-		if (message.content.match(/^https?:\/\/klipy\.com[^ \n]+$/)) {
+		if (message.content?.match(/^https?:\/\/klipy\.com[^ \n]+$/)) {
 			isOnlyKlipyGIF = true
 		}
 	}
@@ -829,32 +900,47 @@ async function messageToEvent(message, guild, options = {}, di) {
 
 	// Then scheduled events
 	if (message.content && di?.snow) {
-		for (const match of [...message.content.matchAll(/discord\.gg\/([A-Za-z0-9]+)\?event=([0-9]{18,})/g)]) { // snowflake has minimum 18 because the events feature is at least that old
+		for (const match of [...message.content.matchAll(/discord\.gg\/([A-Za-z0-9]+)\?event=([0-9]{18,})|\/events\/([0-9]+)\/([0-9]{18,})/g)]) { // snowflake has minimum 18 because the events feature is at least that old
+			/** @type {DiscordTypes.APIGuildScheduledEvent | undefined} */
+			let event
 			let invite
-			try {
-				invite = await di.snow.invite.getInvite(match[1], {guild_scheduled_event_id: match[2]})
-			} catch (e) {
-				// Skip expired/invalid invites and events
-				if (e.message === `{"message": "Unknown Invite", "code": 10006}`) {
-					break
-				} else {
+
+			if (match[1]) {
+				try {
+					invite = await di.snow.invite.getInvite(match[1], {guild_scheduled_event_id: match[2]})
+					event = invite.guild_scheduled_event
+				} catch (e) {
+					// Skip expired/invalid invites and events
+					if (e.message === "Unknown Invite") {
+						break
+					} else {
+						throw e
+					}
+				}
+			} else if (match[3]) {
+				try {
+					event = await di.snow.guildScheduledEvent.getGuildScheduledEvent(match[3], match[4])
+				} catch (e) {
 					throw e
 				}
 			}
 
-			const event = invite.guild_scheduled_event
 			if (!event) continue // the event ID provided was not valid
 
-			const formatter = new Intl.DateTimeFormat("en-NZ", {month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "shortGeneric", timeZone: reg.ooye.time_zone}) // 9 June at 3:00 pm NZT
 			const rep = new mxUtils.MatrixStringBuilder()
+			const unixSeconds = Math.floor(new Date(event.scheduled_start_time).getTime() / 1000)
 
 			// Add time
 			if (event.scheduled_end_time) {
-				// @ts-ignore - no definition available for formatRange
-				rep.addParagraph(`Scheduled Event - ${formatter.formatRange(new Date(event.scheduled_start_time), new Date(event.scheduled_end_time))}`)
+				const formatter = new Intl.DateTimeFormat("en-NZ", {weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC"}) // 9 June at 3:00 pm NZT
+				var displayTime = (formatter.formatRange(new Date(event.scheduled_start_time), new Date(event.scheduled_end_time)) + " (UTC)").replaceAll(/\p{Zs}/gv, " ")
 			} else {
-				rep.addParagraph(`Scheduled Event - ${formatter.format(new Date(event.scheduled_start_time))}`)
+				var displayTime = discordTime.convertDiscordTime(unixSeconds, "F")
 			}
+			rep.addParagraph(
+				`Scheduled Event - ${displayTime}`,
+				tag`Scheduled Event - <a href="${reg.ooye.bridge_origin}/time/${unixSeconds.toString()}/F">${displayTime}</a>`
+			)
 
 			// Add details
 			rep.addLine(`## ${event.name}`, tag`<strong>${event.name}</strong>`)
@@ -863,7 +949,7 @@ async function messageToEvent(message, guild, options = {}, di) {
 			// Add location
 			if (event.entity_metadata?.location) {
 				rep.addParagraph(`📍 ${event.entity_metadata.location}`)
-			} else if (invite.channel?.name) {
+			} else if (invite?.channel?.name) {
 				const roomID = select("channel_room", "room_id", {channel_id: invite.channel.id}).pluck().get()
 				if (roomID) {
 					const via = await getViaServersMemo(roomID)
@@ -883,7 +969,7 @@ async function messageToEvent(message, guild, options = {}, di) {
 
 	// Then attachments
 	if (message.attachments) {
-		const attachmentEvents = await Promise.all(message.attachments.map(attachment => attachmentToEvent(mentions, attachment)))
+		const attachmentEvents = await Promise.all(message.attachments.map(attachment => attachmentToEvent(mentions, attachment, false, {fetch: di?.fetch})))
 
 		// Try to merge attachment events with the previous event
 		// This means that if the attachments ended up as a text link, and especially if there were many of them, the events will be joined together.
@@ -891,6 +977,10 @@ async function messageToEvent(message, guild, options = {}, di) {
 	}
 
 	// Then components
+	// Shift component-type URL embeds here too
+	const componentEmbeds = dUtils.filterTo(message.embeds || [], e => e.type !== "components")
+	message.components ??= []
+	message.components.push(...componentEmbeds.map(e => e.components).flat(1))
 	if (message.components?.length) {
 		const stack = new mxUtils.MatrixStringBuilderStack()
 		/** @param {DiscordTypes.APIMessageComponent} component */
@@ -907,7 +997,14 @@ async function messageToEvent(message, guild, options = {}, di) {
 				/** @type {{[k in keyof DiscordTypes.APIUnfurledMediaItem]-?: NonNullable<DiscordTypes.APIUnfurledMediaItem[k]>}} */ // @ts-ignore
 				const file = component.file
 				assert(component.name && component.size && file.content_type)
-				const ev = await attachmentToEvent({}, {...file, filename: component.name, size: component.size}, true)
+				const ev = await attachmentToEvent({}, {
+					filename: component.name,
+					content_type: file.content_type,
+					size: component.size,
+					url: file.url,
+					height: file.height,
+					width: file.width,
+				}, true, {fetch: di?.fetch})
 				stack.msb.addLine(ev.body, ev.formatted_body)
 			}
 			else if (component.type === DiscordTypes.ComponentType.MediaGallery) {
@@ -988,6 +1085,16 @@ async function messageToEvent(message, guild, options = {}, di) {
 			if ((message.flags ?? 0) & DiscordTypes.MessageFlags.IsComponentsV2) {
 				await addTextEvent(body, formatted_body, "m.text")
 			}
+			// Add as m.notice if component URL preview
+			else if (componentEmbeds.length) {
+				mergeTextEvents([{
+					msgtype: "m.notice",
+					body,
+					format: "org.matrix.custom.html",
+					formatted_body,
+					"m.mentions": mentions
+				}], events, true, false)
+			}
 			// Add to existing message if legacy components https://docs.discord.com/developers/components/reference#legacy-message-component-behavior
 			else {
 				mergeTextEvents([{
@@ -1007,7 +1114,6 @@ async function messageToEvent(message, guild, options = {}, di) {
 	}
 
 	// Then embeds
-	const urlPreviewEnabled = select("guild_space", "url_preview", {guild_id: guild?.id}).pluck().get() ?? 1
 	for (const embed of message.embeds || []) {
 		if (!urlPreviewEnabled && !message.author?.bot) {
 			continue // show embeds for everyone if enabled, or bot users only if disabled (bots often send content in embeds)
@@ -1027,6 +1133,10 @@ async function messageToEvent(message, guild, options = {}, di) {
 
 		if (embed.url?.startsWith("https://discord.com/")) {
 			continue // If discord creates an embed preview for a discord channel link, don't copy that embed
+		}
+
+		if (embed.provider?.name === "GitHub") {
+			continue // GitHub url previews are very large and fairly useless
 		}
 
 		if (embed.url && spoilers.some(sp => sp.match(/\bhttps?:\/\/[a-z]/))) {
@@ -1051,17 +1161,8 @@ async function messageToEvent(message, guild, options = {}, di) {
 
 			let {body, formatted_body: html} = rep.get()
 			html = `<blockquote>${html}</blockquote>`
-			await addTextEvent(body, html, "m.text")
+			await addTextEvent(body, html, "m.text", {urlPreviews: true})
 			continue
-		}
-
-		// Provider
-		if (embed.provider?.name && embed.provider.name !== "Tenor") {
-			if (embed.provider.url) {
-				rep.addParagraph(`via ${embed.provider.name} ${embed.provider.url}`, tag`<sub><a href="${embed.provider.url}">${embed.provider.name}</a></sub>`)
-			} else {
-				rep.addParagraph(`via ${embed.provider.name}`, tag`<sub>${embed.provider.name}</sub>`)
-			}
 		}
 
 		// Author and URL into a paragraph
@@ -1113,7 +1214,18 @@ async function messageToEvent(message, guild, options = {}, di) {
 
 		if (embed.video?.url) rep.addParagraph(`🎞️ ${dUtils.getPublicUrlForCdn(embed.video.url)}`)
 
-		if (embed.footer?.text) rep.addLine(`— ${embed.footer.text}`, tag`— ${embed.footer.text}`)
+		// Provider and footer (moved to bottom, below author/title, to improve room preview line)
+		if (embed.provider?.name && embed.provider.name !== "Tenor" && embed.provider.name !== "YouTube") {
+			const insertableFooterText = embed.footer?.text ? ` — ${embed.footer.text}` : ""
+			if (embed.provider.url) {
+				rep.addLine(`via ${embed.provider.name}${insertableFooterText || " " + embed.provider.url}`, tag`<sub><a href="${embed.provider.url}">${embed.provider.name}</a>${insertableFooterText}</sub>`)
+			} else {
+				rep.addLine(`via ${embed.provider.name}${insertableFooterText}`, tag`<sub>${embed.provider.name}${insertableFooterText}</sub>`)
+			}
+		} else if (embed.footer?.text) {
+			rep.addLine(`— ${embed.footer.text}`, tag`— ${embed.footer.text}`)
+		}
+
 		let {body, formatted_body: html} = rep.get()
 		body = body.split("\n").map(l => "| " + l).join("\n")
 		html = `<blockquote>${html}</blockquote>`
@@ -1123,8 +1235,14 @@ async function messageToEvent(message, guild, options = {}, di) {
 			continue
 		}
 
+		// Always allow client generation of GIFs and YouTube videos so they can be embedded in chat
+		const urlPreviews = []
+		if (embed.provider?.name === "YouTube" || embed.provider?.name === "Tenor") {
+			urlPreviews.push({"matrix:matched_url": embed.url})
+		}
+
 		// Send as m.notice to apply the usual automated/subtle appearance, showing this wasn't actually typed by the person
-		await addTextEvent(body, html, "m.notice")
+		await addTextEvent(body, html, "m.notice", {urlPreviews})
 	}
 
 	// Then stickers
@@ -1159,8 +1277,15 @@ async function messageToEvent(message, guild, options = {}, di) {
 		events.push(...stickerEvents)
 	}
 
+	// If d->m URL previews are disabled then use default server side generation instead
+	if (!urlPreviewEnabled) {
+		for (const event of events) {
+			delete event["m.url_previews"]
+		}
+	}
+
 	// Rich replies
-	if (repliedToEventRow && !repliedToEventInDifferentRoom) {
+	if (repliedToEventRow && !repliedToEventInDifferentRoom && events[0]) {
 		Object.assign(events[0], {
 			"m.relates_to": {
 				"m.in_reply_to": {

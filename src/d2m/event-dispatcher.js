@@ -45,7 +45,7 @@ const redact = sync.require("../m2d/actions/redact.js")
 const matrixInfoInteraction = sync.require("../discord/interactions/matrix-info")
 
 const {Semaphore} = require("@chriscdn/promise-semaphore")
-const checkMissedPinsSema = new Semaphore()
+const checkMissedPinsSema = sync.remember(() => new Semaphore())
 
 // Grab Discord events we care about for the bridge, check them, and pass them on
 
@@ -60,7 +60,7 @@ module.exports = {
 
 		matrixEventDispatcher.printError(gatewayMessage.t, "Discord", e, gatewayMessage)
 
-		const channelID = gatewayMessage.d["channel_id"]
+		const channelID = gatewayMessage.d?.["channel_id"]
 		if (!channelID) return
 		const roomID = select("channel_room", "room_id", {channel_id: channelID}).pluck().get()
 		if (!roomID) return
@@ -107,7 +107,7 @@ module.exports = {
 			try {
 				messages = await client.snow.channel.getChannelMessages(channel.id, {limit: 100})
 			} catch (e) {
-				if (e.message === `{"message": "Missing Access", "code": 50001}`) { // pathetic error handling from SnowTransfer
+				if (e.message === "Missing Access") {
 					console.log(`[check missed messages] no permissions to look back in channel ${channel.name} (${channel.id})`)
 					continue // Sucks.
 				} else {
@@ -288,7 +288,6 @@ module.exports = {
 		if (!guildID) return // channel must have been a DM channel or something
 		const roomID = select("channel_room", "room_id", {channel_id: channel.id}).pluck().get()
 		if (!roomID) return // channel wasn't being bridged in the first place
-		// @ts-ignore
 		await createRoom.unbridgeChannel(channel, guildID)
 	},
 
@@ -298,6 +297,7 @@ module.exports = {
 	 */
 	async MESSAGE_CREATE(client, message) {
 		if (message.author.username === "Deleted User") return // Nothing we can do for deleted users.
+		if (select("opt_out", "user_id", {user_id: message.author.id}).pluck().get()) return // This user opted out.
 		const channel = client.channels.get(message.channel_id)
 		if (!channel || !("guild_id" in channel) || !channel.guild_id) return // Nothing we can do in direct messages.
 
@@ -313,11 +313,10 @@ module.exports = {
 
 		if (!createRoom.existsOrAutocreatable(channel, guild.id)) return // Check that the sending-to room exists or is autocreatable
 
-		const {affected, row} = await speedbump.maybeDoSpeedbump(message.channel_id, message.id, message.author.id)
-		if (affected) return
+		const {skip} = await speedbump.maybeDoSpeedbump(true, message)
+		if (skip) return
 
-		// @ts-ignore
-		await sendMessage.sendMessage(message, channel, guild, row)
+		await sendMessage.sendMessage(message, channel, guild)
 
 		retrigger.finishedBridging(message.id)
 	},
@@ -335,22 +334,27 @@ module.exports = {
 		if (dUtils.isEphemeralMessage(data)) return // Ephemeral messages are for the eyes of the receiver only!
 
 		// Edits need to go through the speedbump as well. If the message is delayed but the edit isn't, we don't have anything to edit from.
-		const {affected, row} = await speedbump.maybeDoSpeedbump(data.channel_id, data.id, data.author.id)
-		if (affected) return
-
-		// Check that the sending-to room exists, and deal with Eventual Consistency(TM)
-		if (!await retrigger.waitForMessage(data.id)) return
+		const {skip, hasCreate} = await speedbump.maybeDoSpeedbump(false, data)
+		if (skip) return
 
 		/** @type {DiscordTypes.GatewayMessageCreateDispatchData} */
-		// @ts-ignore
 		const message = data
 		const channel = client.channels.get(message.channel_id)
 		if (!channel || !("guild_id" in channel) || !channel.guild_id) return // Nothing we can do in direct messages.
 		const guild = client.guilds.get(channel.guild_id)
 		assert(guild)
 
-		// @ts-ignore
-		await retrigger.pauseChanges(message.id, editMessage.editMessage(message, guild, row))
+		if (!hasCreate) {
+			// Standard path for most message updates
+			// Check that the target message already exists, and deal with Eventual Consistency(TM)
+			if (!await retrigger.waitForMessage(data.id)) return
+			await retrigger.pauseChanges(message.id, editMessage.editMessage(message, guild))
+		}
+		else {
+			// Path for edit packets that were speedbumped into the latest copy of a message that needs to be created
+			// Just pretend to be MESSAGE_CREATE
+			await sendMessage.sendMessage(message, channel, guild)
+		}
 	},
 
 	/**
@@ -358,6 +362,7 @@ module.exports = {
 	 * @param {DiscordTypes.GatewayMessageReactionAddDispatchData} data
 	 */
 	async MESSAGE_REACTION_ADD(client, data) {
+		if (select("opt_out", "user_id", {user_id: data.user_id}).pluck().get()) return // This user opted out.
 		if (data.user_id === client.user.id) return // m2d reactions are added by the discord bot user - do not reflect them back to matrix.
 		if (data.emoji.name === "❓" && select("event_message", "message_id", {message_id: data.message_id, source: 0, part: 0}).get()) { // source 0 = matrix
 			const guild_id = data.guild_id ?? client.channels.get(data.channel_id)?.["guild_id"]
@@ -412,6 +417,7 @@ module.exports = {
 	 * @param {DiscordTypes.GatewayTypingStartDispatchData} data
 	 */
 	async TYPING_START(client, data) {
+		if (data.user_id === client.user.id) return
 		const roomID = select("channel_room", "room_id", {channel_id: data.channel_id}).pluck().get()
 		if (!roomID) return
 		const mxid = from("sim").join("sim_member", "mxid").where({user_id: data.user_id, room_id: roomID}).pluck("mxid").get()

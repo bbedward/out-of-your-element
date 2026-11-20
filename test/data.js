@@ -144,6 +144,7 @@ module.exports = {
 				events_default: 0,
 				events: {
 					"m.reaction": 0,
+					"org.matrix.msc3381.poll.response": 0,
 					"m.room.redaction": 0
 				},
 				users: {
@@ -1678,6 +1679,108 @@ module.exports = {
 			edited_timestamp: null,
 			flags: 0,
 			components: []
+		},
+		simple_game_mention: {
+			type: 0,
+			content: "do you play <@$1402418491272986635>",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2026-09-28T21:01:56.749000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1554236746756268077",
+			channel_id: "1160894080998461480",
+			author: {
+				id: "177438227563675648",
+				username: "owlbot",
+				avatar: "bafbcafcc0a6c2698d59a2cb567a9ecf",
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: null,
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				vad_colors: null,
+				banner_color: null,
+				clan: {
+					identity_guild_id: "773319828295385108",
+					identity_enabled: true,
+					tag: "puzl",
+					badge: "1935451f265a42d57241c7bcc9555abe"
+				},
+				primary_guild: {
+					identity_guild_id: "773319828295385108",
+					identity_enabled: true,
+					tag: "puzl",
+					badge: "1935451f265a42d57241c7bcc9555abe"
+				}
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+			mention_games: [
+				{
+					id: "1402418491272986635",
+					name: "Minecraft",
+					aliases: [ "Minecraft Windows 10 Edition", "Minecraft Launcher" ],
+				}
+			]
+		},
+		timestamps: {
+			type: 0,
+			content: "<t:1791106413:S>\n" +
+			"<t:1791106436:f>\n" +
+			"<t:1791106440:F>\n" +
+			"<t:1791106448:T>\n" +
+			"<t:1791019800:R>\n" +
+			"<t:1798153200:R>",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2026-10-04T09:34:27.909000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1556238063774990499",
+			channel_id: "1160894080998461480",
+			author: {
+				id: "772659086046658620",
+				username: "cadence.worm",
+				avatar: "466df0c98b1af1e1388f595b4c1ad1b9",
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "cadence",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				vad_colors: null,
+				banner_color: null,
+				clan: {
+					identity_guild_id: "532245108070809601",
+					identity_enabled: true,
+					tag: "doll",
+					badge: "dba08126b4e810a0e096cc7cd5bc37f0"
+				},
+				primary_guild: {
+					identity_guild_id: "532245108070809601",
+					identity_enabled: true,
+					tag: "doll",
+					badge: "dba08126b4e810a0e096cc7cd5bc37f0"
+				}
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false
 		},
 		unknown_role: {
 			id: "1162374402785153106",
@@ -5296,9 +5399,115 @@ module.exports = {
 					}
 				}
 			]
+		},
+		embed_provider_and_footer: {
+			type: 0,
+			content: "https://cohost.org/jkap/post/4794219-empty",
+			author: {
+				id: "113340068197859328",
+				username: "kumaccino",
+				avatar: "b48302623a12bc7c59a71328f72ccb39",
+				discriminator: "0",
+				public_flags: 128,
+				premium_type: 0,
+				flags: 128,
+				banner: null,
+				accent_color: null,
+				global_name: "kumaccino",
+				avatar_decoration_data: null,
+				banner_color: null
+			},
+			attachments: [],
+			channel_id: "112760669178241024",
+			embeds: [
+				{
+					color: 8594767,
+					description: "1v1 physical card game. Each player gets one standard deck of cards with a different backing to differentiate. Every turn proceeds as follows:\n\n * Both players draw eight cards\n * Both players may choose up to eight cards to discard, then draw that number of cards to put back in their hand\n * Both players present their best five-or-less-card pok...",
+					provider: {
+						name: "hthrflwrs on cohost"
+					},
+					footer: {
+						text: "29/2/2024, 2:17 PM"
+					},
+					thumbnail: {
+						height: 1587,
+						placeholder: "GpoKP5BJZphshnhwmmmYlmh3l7+m+mwJ",
+						placeholder_version: 1,
+						proxy_url: "https://images-ext-2.discordapp.net/external/9vTXIzlXU4wyUZvWfmlmQkck8nGLUL-A090W4lWsZ48/https/staging.cohostcdn.org/avatar/292-6b64b03c-4ada-42f6-8452-109275bfe68d-profile.png",
+						url: "https://staging.cohostcdn.org/avatar/292-6b64b03c-4ada-42f6-8452-109275bfe68d-profile.png",
+						width: 1644
+					},
+					title: "This post nerdsniped me, so here's some RULES FOR REAL-LIFE BALATRO",
+					type: "link",
+					url: "https://cohost.org/jkap/post/4794219-empty"
+				}
+			],
+			guild_id: "112760669178241024",
+			id: "1210387798297682020",
+			mentions: [],
+			mention_roles: [],
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+			timestamp: "2024-02-21T18:15:43.353000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: []
 		}
 	},
 	message_with_components: {
+		wikipedia_component_url_preview: {
+			type: 0,
+			content: "https://en.wikipedia.org/wiki/HTTP/2",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [
+				{
+					type: "components",
+					url: "https://en.wikipedia.org/wiki/HTTP/2",
+					content_scan_version: 4,
+					components: [
+						{
+							type: 17,
+							id: 1,
+							accent_color: null,
+							components: [
+								{
+									type: 10,
+									id: 2,
+									content: "### [HTTP/2](https://en.wikipedia.org/wiki/HTTP/2?wprov=diim1)\n\nHTTP/2 (originally named HTTP/2.0) is a major revision of the HTTP network protocol used by the World Wide Web. It was derived from the earlier experimental SPDY protocol, originally developed by Google. HTTP/2 was developed by the HTTP Working Group (also called httpbis, where \"bis\" means \"twice\" in Latin) of the Internet Engineering Task Force (…"
+								}
+							],
+							spoiler: false
+						}
+					]
+				}
+			],
+			timestamp: "2026-10-14T02:52:14.399000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1559760719153602600",
+			channel_id: "1160893337029586956",
+			author: {
+				id: "1506959407827779736",
+				username: "dollmoder",
+				avatar: "37f1b0457fc28bccad57bf5baefa0b1b",
+				discriminator: "0000",
+				public_flags: 0,
+				flags: 0,
+				bot: true,
+				global_name: null,
+				clan: null,
+				primary_guild: null
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+			application_id: "684280192553844747",
+			webhook_id: "1506959407827779736"
+		},
 		pk_question_mark_response: {
 			type: 0,
 			content: '',
@@ -6707,7 +6916,6 @@ module.exports = {
 			attachments: [],
 			application_id: "684280192553844747"
 		},
-		shard_id: 0
 	},
 	interaction_message: {
 		thinking_interaction_without_bot_user: {

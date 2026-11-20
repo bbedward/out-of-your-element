@@ -3,6 +3,29 @@ const {messageToEvent} = require("./message-to-event")
 const data = require("../../../test/data")
 const {mockGetEffectivePower} = require("../../matrix/utils.test")
 
+test("message2event url preview components: wikipedia", async t => {
+	const events = await messageToEvent(data.message_with_components.wikipedia_component_url_preview, data.guild.general, {})
+	t.deepEqual(events, [
+		{
+		  $type: "m.room.message",
+		  body: "https://en.wikipedia.org/wiki/HTTP/2",
+		  format: "org.matrix.custom.html",
+		  formatted_body: "<a href=\"https://en.wikipedia.org/wiki/HTTP/2\">https://en.wikipedia.org/wiki/HTTP/2</a>",
+		  "m.mentions": {},
+		  msgtype: "m.text"
+		},
+		{
+		  body: "| ### [HTTP/2](https://en.wikipedia.org/wiki/HTTP/2?wprov=diim1)"
+			+ "\n| "
+			+ "\n| HTTP/2 (originally named HTTP/2.0) is a major revision of the HTTP network protocol used by the World Wide Web. It was derived from the earlier experimental SPDY protocol, originally developed by Google. HTTP/2 was developed by the HTTP Working Group (also called httpbis, where \"bis\" means \"twice\" in Latin) of the Internet Engineering Task Force (…",
+		  format: "org.matrix.custom.html",
+		  formatted_body: "<blockquote><h3><a href=\"https://en.wikipedia.org/wiki/HTTP/2?wprov=diim1\">HTTP/2</a></h3>HTTP/2 (originally named HTTP/2.0) is a major revision of the HTTP network protocol used by the World Wide Web. It was derived from the earlier experimental SPDY protocol, originally developed by Google. HTTP/2 was developed by the HTTP Working Group (also called httpbis, where \"bis\" means \"twice\" in Latin) of the Internet Engineering Task Force (…</blockquote>",
+		  msgtype: "m.notice",
+		  "m.mentions": {}
+		}
+	])
+})
+
 test("message2event components: pk question mark output", async t => {
 	const events = await messageToEvent(data.message_with_components.pk_question_mark_response, data.guild.general, {})
 	t.deepEqual(events, [{
@@ -44,7 +67,7 @@ test("message2event components: pk question mark output", async t => {
 			+ "\n| Same hat"
 			+ "\n| 🖼️ Image: https://bridge.example.org/download/discordcdn/934955898965729280/1466556006527012987/image.png"
 			+ "\n"
-			+ "\n-# Original Message ID: 1466556003645657118 · <t:1769724599:f>",
+			+ "\n-# Original Message ID: 1466556003645657118 · 29 January 2026 at 10:09 pm (UTC)",
 		format: "org.matrix.custom.html",
 		formatted_body: "<blockquote>"
 			+ "<h3>Lillith (INX)</h3>"
@@ -73,7 +96,7 @@ test("message2event components: pk question mark output", async t => {
 			+ "<hr>"
 			+ "<p>Same hat</p>"
 			+ `🖼️ Image: <a href="https://bridge.example.org/download/discordcdn/934955898965729280/1466556006527012987/image.png">image.png</a></blockquote>`
-			+ "<p><sub>Original Message ID: 1466556003645657118 · &lt;t:1769724599:f&gt;</sub></p>",
+			+ "<p><sub>Original Message ID: 1466556003645657118 · <a href=\"https://bridge.example.org/time/1769724599/f\"><time data-style=\"f\" datetime=\"2026-01-29T22:09:59.000Z\">29 January 2026 at 10:09 pm (UTC)</time></a></sub></p>",
 		"m.mentions": {},
 		msgtype: "m.text",
 	}])

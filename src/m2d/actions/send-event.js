@@ -14,8 +14,6 @@ const channelWebhook = sync.require("./channel-webhook")
 const eventToMessage = sync.require("../converters/event-to-message")
 /** @type {import("../../matrix/api")}) */
 const api = sync.require("../../matrix/api")
-/** @type {import("../../matrix/utils")}) */
-const utils = sync.require("../../matrix/utils")
 /** @type {import("../../d2m/actions/register-user")} */
 const registerUser = sync.require("../../d2m/actions/register-user")
 /** @type {import("../../d2m/actions/edit-message")} */
@@ -24,8 +22,14 @@ const editMessage = sync.require("../../d2m/actions/edit-message")
 const emojiSheet = sync.require("../actions/emoji-sheet")
 
 /**
- * @param {DiscordTypes.RESTPostAPIWebhookWithTokenJSONBody & {files?: {name: string, file: Buffer | stream.Readable}[], pendingFiles?: ({name: string, mxc: string} | {name: string, mxc: string, key: string, iv: string} | {name: string, buffer: Buffer | stream.Readable})[]}} message
- * @returns {Promise<DiscordTypes.RESTPostAPIWebhookWithTokenJSONBody & {files?: {name: string, file: Buffer | stream.Readable}[]}>}
+ * @type {Map<string, string>} room id -> mxid
+ * Keep track of the sender of the latest event per room, this is needed to trim display name runoff for subsequent messages
+ */
+const latestSenderPerRoom = sync.remember(() => new Map())
+
+/**
+ * @param {DiscordTypes.RESTPostAPIWebhookWithTokenJSONBody & {files?: {name: string, file: Buffer | Blob}[], pendingFiles?: ({name: string, mxc: string} | {name: string, mxc: string, key: string, iv: string} | {name: string, buffer: Buffer | Blob})[]}} message
+ * @returns {Promise<DiscordTypes.RESTPostAPIWebhookWithTokenJSONBody & {files?: {name: string, file: Buffer | Blob}[]}>}
  */
 async function resolvePendingFiles(message) {
 	if (!message.pendingFiles) return message
@@ -38,18 +42,22 @@ async function resolvePendingFiles(message) {
 		}
 		if ("key" in p) {
 			// Encrypted file
+			const res = await api.getMedia(p.mxc)
 			const d = crypto.createDecipheriv("aes-256-ctr", Buffer.from(p.key, "base64url"), Buffer.from(p.iv, "base64url"))
-			await api.getMedia(p.mxc).then(res => stream.Readable.fromWeb(res.body).pipe(d))
+			/** @type {ReadableStream} */ // @ts-ignore - close enough
+			const piped = res.body.pipeThrough(stream.Transform.toWeb(d))
+			const blob = await new Response(piped).blob()
 			return {
 				name: p.name,
-				file: d
+				file: blob
 			}
 		} else {
 			// Unencrypted file
-			const body = await api.getMedia(p.mxc).then(res => stream.Readable.fromWeb(res.body))
+			const res = await api.getMedia(p.mxc)
+			const blob = await res.blob()
 			return {
 				name: p.name,
-				file: body
+				file: blob
 			}
 		}
 	}))
@@ -81,7 +89,12 @@ async function sendEvent(event) {
 
 	// no need to sync the matrix member to the other side. but if I did need to, this is where I'd do it
 
-	const di = {api, snow: discord.snow, mxcDownloader: emojiSheet.getAndConvertEmoji}
+	const di = {
+		api,
+		snow: discord.snow,
+		mxcDownloader: emojiSheet.getAndConvertEmoji,
+		noRunoff: latestSenderPerRoom.get(event.room_id) === event.sender
+	}
 
 	if (event.type === "org.matrix.msc3381.poll.end") {
 		// Validity already checked by dispatcher. Poll is definitely closed. Update it and DI necessary data.
@@ -153,7 +166,7 @@ async function sendEvent(event) {
 					channel_id: messageResponse.channel_id,
 					guild_id: guild.id,
 					embeds: messageResponse.embeds
-				}, guild, null)
+				}, guild)
 			)
 		}
 	}
@@ -187,3 +200,4 @@ async function sendEvent(event) {
 }
 
 module.exports.sendEvent = sendEvent
+module.exports.latestSenderPerRoom = latestSenderPerRoom

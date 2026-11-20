@@ -15,8 +15,8 @@ const {discord, as, sync, select, from, db} = require("../../passthrough")
 const pugSync = sync.require("../pug-sync")
 /** @type {import("../../d2m/actions/create-space")} */
 const createSpace = sync.require("../../d2m/actions/create-space")
-/** @type {import("../auth")} */
-const auth = require("../auth")
+/** @type {import("../web-utils")} */
+const webUtils = require("../web-utils")
 /** @type {import("../../discord/utils")} */
 const dUtils = sync.require("../../discord/utils")
 /** @type {import("../../matrix/utils")} */
@@ -31,7 +31,7 @@ const schema = {
 		guild_id: z.string().optional()
 	}),
 	invite: z.object({
-		mxid: z.string().regex(/@([^:]+):([a-z0-9:-]+\.[a-z0-9.:-]+)/),
+		mxid: z.stringFormat("mxid", mxUtils.parseMxid),
 		permissions: z.enum(["default", "moderator", "admin"]),
 		guild_id: z.string().optional(),
 		nonce: z.string().optional()
@@ -51,7 +51,7 @@ function getAPI(event) {
 }
 
 /** @type {LRUCache<string, string>} nonce to guild id */
-const validNonce = new LRUCache({max: 200})
+const validNonce = sync.remember(() => new LRUCache({max: 200}))
 
 /**
  * @param {{type: number, parent_id?: string | null, position?: number}} channel
@@ -99,7 +99,7 @@ function getChannelRoomsLinks(guild, rooms, roles) {
 	let channelIDs = discord.guildChannelMap.get(guild.id)
 	assert(channelIDs)
 
-	let linkedChannels = select("channel_room", ["channel_id", "room_id", "name", "nick"], {channel_id: channelIDs}).all()
+	let linkedChannels = select("channel_room", ["channel_id", "room_id", "name", "nick", "room_mention_role"], {channel_id: channelIDs}).all()
 	let linkedChannelsWithDetails = linkedChannels.map(c => ({
 		// @ts-ignore
 		/** @type {DiscordTypes.APIGuildChannel} */ channel: discord.channels.get(c.channel_id),
@@ -150,21 +150,21 @@ function getInviteTargetSpaces(mxid) {
 
 as.router.get("/guild", defineEventHandler(async event => {
 	const {guild_id} = await getValidatedQuery(event, schema.guild.parse)
-	const session = await auth.useSession(event)
-	const managed = await auth.getManagedGuilds(event)
+	const session = await webUtils.useSession(event)
+	const managed = await webUtils.getManagedGuilds(event)
 	const row = from("guild_active").join("guild_space", "guild_id", "left").select("space_id", "privacy_level", "autocreate").where({guild_id}).get()
 	// @ts-ignore
 	const guild = discord.guilds.get(guild_id)
 
 	// Permission problems
 	if (!guild_id || !guild || !managed.has(guild_id) || !row) {
-		return pugSync.render(event, "guild_access_denied.pug", {guild_id, row})
+		return pugSync.render(event, "guild-access-denied.pug", {guild_id, row})
 	}
 
 	// Self-service guild that hasn't been linked yet - needs a special page encouraging the link flow
 	if (!row.space_id && row.autocreate === 0) {
 		const spaces = session.data.mxid ? getInviteTargetSpaces(session.data.mxid) : []
-		return pugSync.render(event, "guild_not_linked.pug", {guild, guild_id, spaces})
+		return pugSync.render(event, "guild-not-linked.pug", {guild, guild_id, spaces})
 	}
 
 	const roles = guild.members?.find(m => m.user.id === botID)?.roles || []
@@ -184,14 +184,14 @@ as.router.get("/guild", defineEventHandler(async event => {
 
 as.router.get("/qr", defineEventHandler(async event => {
 	const {guild_id} = await getValidatedQuery(event, schema.qr.parse)
-	const managed = await auth.getManagedGuilds(event)
+	const managed = await webUtils.getManagedGuilds(event)
 	const row = from("guild_active").join("guild_space", "guild_id", "left").select("space_id", "privacy_level", "autocreate").where({guild_id}).get()
 	// @ts-ignore
 	const guild = discord.guilds.get(guild_id)
 
 	// Permission problems
 	if (!guild_id || !guild || !managed.has(guild_id) || !row) {
-		return pugSync.render(event, "guild_access_denied.pug", {guild_id, row})
+		return pugSync.render(event, "guild-access-denied.pug", {guild_id, row})
 	}
 
 	const nonce = randomUUID()
@@ -216,8 +216,9 @@ as.router.get("/invite", defineEventHandler(async event => {
 }))
 
 as.router.post("/api/invite", defineEventHandler(async event => {
+	webUtils.rejectCrossSiteRequest(event)
 	const parsedBody = await readValidatedBody(event, schema.invite.parse)
-	const managed = await auth.getManagedGuilds(event)
+	const managed = await webUtils.getManagedGuilds(event)
 	const api = getAPI(event)
 
 	// Check guild ID or nonce

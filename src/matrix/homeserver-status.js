@@ -1,0 +1,156 @@
+// @ts-check
+
+const assert = require("assert").strict
+const Denque = require("denque")
+const StateMachine = require("snowtransfer").StateMachine
+
+const passthrough = require("../passthrough")
+const {sync} = passthrough
+/** @type {import("../d2m/discord-packets")} */
+const discordPackets = sync.require("../d2m/discord-packets")
+/** @type {import("../matrix/api")} */
+const api = sync.require("../matrix/api")
+
+const DEBUG_HOMESERVER_STATUS = false
+
+function debugHomeserverStatus(message) {
+	if (DEBUG_HOMESERVER_STATUS) {
+		console.log(message)
+	}
+}
+
+const homeserverStatus = sync.remember(() => new class HomeserverStatus {
+	constructor() {
+		/** @private */
+		this.queue = new Denque()
+
+		/** @private */
+		this.pingInterval = undefined
+
+		/** @private */
+		this.checkingWhileOnline = true
+
+		/** @private */
+		this.lastCheck = 0
+
+		/** @private */
+		this.sm = new StateMachine("online")
+			.defineState("online")
+
+			.defineState("checking", {
+				onEnter: [async (event) => {
+					this.checkingWhileOnline = event === "check while online"
+					const pingResult = await api.ping().catch(e => ({ok: false}))
+					this.lastCheck = Date.now()
+					if (pingResult.ok) {
+						this.sm.doTransition("check ok")
+					} else {
+						this.sm.doTransition("check fail")
+					}
+				}],
+				onLeave: [],
+				transitions: new Map()
+			})
+
+			.defineState("offline", {
+				onEnter: [() => {
+					console.log("[homeserver status] Offline. The failed event and further events will be queued.")
+					this.pingInterval = setInterval(async () => {
+						const pingResult = await api.ping().catch(e => ({ok: false, status: "net", root: e.message}))
+						this.lastCheck = Date.now()
+						if (pingResult.ok) {
+							this.sm.doTransition("ping ok")
+						}
+					}, 15e3)
+				}],
+				onLeave: [() => {
+					clearInterval(this.pingInterval)
+				}],
+				transitions: new Map()
+			})
+
+			.defineState("recovering", {
+				onEnter: [async () => { // Drain queue.
+					if (!this.queue.isEmpty()) {
+						console.log(`[homeserver status] Online, playing ${this.queue.length} events from queue...`)
+						while (!this.queue.isEmpty()) {
+							const [source, packet] = this.queue.peekFront() // same position as .shift()
+							debugHomeserverStatus(`homeserver status: ${new Date().toISOString()} dq sourceAndPacket ${packet.t} ${packet.d?.content}`)
+							if (source === "Discord") {
+								await discordPackets.dispatchPacketToBridge(passthrough.discord, packet)
+							} else {
+								// Unfortunately cannot await this, just have to trust it
+								passthrough.as.emit(`type:${packet.type}`, packet)
+							}
+							if (this.sm.currentStateName !== "recovering") return // got kicked out due to another error
+							this.queue.shift()
+						}
+					}
+					console.log("[homeserver status] Back to real-time operation.")
+					this.sm.doTransition("recovered")
+				}],
+				onLeave: [],
+				transitions: new Map()
+			})
+
+			.defineUniversalTransition("error", "offline")
+			.defineTransition("offline", "ping ok", "recovering")
+			.defineTransition("recovering", "recovered", "online")
+			.defineTransition("online", "check assume online", "checking")
+			.defineTransition("online", "check assume offline", "checking")
+			.defineTransition("checking", "check ok", "online")
+			.defineTransition("checking", "check fail", "offline")
+
+		this.sm.on("enter", st => debugHomeserverStatus(`homeserver status: ${st}`))
+		this.sm.setMaxListeners(101)
+		this.sm.freeze()
+	}
+
+	isRealTime() {
+		return this.sm.currentStateName === "online" || (this.sm.currentStateName === "checking" && this.checkingWhileOnline)
+	}
+
+	/** @param {boolean} forceCheck */
+	waitForOnline(forceCheck) {
+		const onlinePromise = new Promise(resolve => {
+			// Already online? Start check or just done
+			if (this.sm.currentStateName === "online") {
+				if (forceCheck) {
+					this.sm.doTransition("check assume offline")
+				} else if (this.lastCheck < Date.now() - 15e3) {
+					this.sm.doTransition("check assume online")
+				} else {
+					return resolve(null)
+				}
+			}
+
+			// Checking or not online. Wait for online.
+			const onlineListener = stateName => {
+				if (stateName === "online") {
+					this.sm.removeListener("enter", onlineListener)
+					resolve(null)
+				}
+			}
+			this.sm.on("enter", onlineListener)
+		})
+		return onlinePromise
+	}
+
+	/**
+	 * When offline or recovering, call this for incoming packets to queue them to be sent in order later.
+	 */
+	queuePacket(sourceAndPacket) {
+		assert(["offline", "recovering"].includes(this.sm.currentStateName))
+		this.queue.push(sourceAndPacket)
+	}
+
+	setErrorWithPacket(sourceAndPacket) {
+		const wasRecovering = this.sm.currentStateName === "recovering"
+		this.sm.doTransition("error")
+		if (!wasRecovering) { // if was recovering then sourceAndPacket is already in the right place in queue
+			this.queuePacket(sourceAndPacket)
+		}
+	}
+})
+
+module.exports.homeserverStatus = homeserverStatus

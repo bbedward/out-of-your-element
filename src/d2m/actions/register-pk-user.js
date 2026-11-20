@@ -1,8 +1,9 @@
 // @ts-check
 
-const assert = require("assert")
+const assert = require("assert").strict
 const {reg} = require("../../matrix/read-registration")
 const Ty = require("../../types")
+const {scheduler} = require("timers/promises")
 
 const passthrough = require("../../passthrough")
 const {sync, db, select, from} = passthrough
@@ -14,14 +15,21 @@ const file = sync.require("../../matrix/file")
 const registerUser = sync.require("./register-user")
 
 /** @returns {Promise<Ty.PkMessage>} */
-async function fetchMessage(messageID) {
+async function fetchMessage(messageID, attempt = 1) {
 	try {
-		var res = await fetch(`https://api.pluralkit.me/v2/messages/${messageID}`)
+		var res = await fetch("https://api.pluralkit.me" + api.route`/v2/messages/${messageID}`)
 	} catch (networkError) {
 		// Network issue, raise a more readable message
 		throw new Error(`Failed to connect to PK API: ${networkError.toString()}`)
 	}
-	if (!res.ok) throw new Error(`PK API returned an error: ${await res.text()}`)
+	if (!res.ok) {
+		if (attempt < 2) {
+			await scheduler.wait(5000)
+			return fetchMessage(messageID, attempt + 1)
+		} else {
+			throw new Error(`PK API returned an error: ${await res.text()}`)
+		}
+	}
 	/** @type {any} */
 	const root = await res.json()
 	if (!root.member) throw new Error(`PK API didn't return member data: ${JSON.stringify(root)}`)
@@ -98,11 +106,13 @@ async function ensureSimJoined(pkMessage, roomID) {
  * Generate profile data based on webhook displayname and configured avatar.
  * @param {Ty.PkMessage} pkMessage
  * @param {Ty.WebhookAuthor} author
+ * @returns {Promise<Ty.Event.M_Room_Member>}
  */
 async function memberToStateContent(pkMessage, author) {
 	// We prefer to use the member's avatar URL data since the image upload can be cached across channels,
 	// unlike the userAvatar URL which is unique per channel, due to the webhook ID being in the URL.
 	const avatar = pkMessage.member.avatar_url || pkMessage.member.webhook_avatar_url || pkMessage.system.avatar_url || file.userAvatar(author)
+	const color = pkMessage.member.color ?? pkMessage.system.color
 
 	const content = {
 		displayname: author.username,
@@ -110,6 +120,12 @@ async function memberToStateContent(pkMessage, author) {
 		"moe.cadence.ooye.pk_member": pkMessage.member
 	}
 	if (avatar) content.avatar_url = await file.uploadDiscordFileToMxc(avatar)
+	if (color) {
+		content["eu.she-a.color"] = {
+			on_dark: `#${color}`,
+			on_light: `#${color}`
+		}
+	}
 
 	return content
 }
@@ -132,10 +148,10 @@ async function syncUser(messageID, author, roomID, shouldActuallySync) {
 	try {
 		// API lookup
 		var pkMessage = await fetchMessage(messageID)
-		db.prepare("REPLACE INTO sim_proxy (user_id, proxy_owner_id, displayname) VALUES (?, ?, ?)").run(pkMessage.member.uuid, pkMessage.sender, author.username)
+		db.prepare("REPLACE INTO sim_proxy (user_id, proxy_owner_id, displayname, proxy_app) VALUES (?, ?, ?, 0)").run(pkMessage.member.uuid, pkMessage.sender, author.username)
 	} catch (e) {
 		// Fall back to offline cache
-		const senderMxid = from("sim_proxy").join("sim", "user_id").join("sim_member", "mxid").where({displayname: author.username, room_id: roomID}).pluck("mxid").get()
+		const senderMxid = from("sim_proxy").join("sim", "user_id").join("sim_member", "mxid").where({displayname: author.username, room_id: roomID, proxy_app: 0}).pluck("mxid").get()
 		if (!senderMxid) throw e
 		return senderMxid
 	}

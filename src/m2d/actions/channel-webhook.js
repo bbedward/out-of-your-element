@@ -45,7 +45,7 @@ async function ensureWebhook(channelID, forceCreate = false) {
 async function withWebhook(channelID, callback) {
 	const webhook = await ensureWebhook(channelID, false)
 	return callback(webhook).catch(async e => {
-		if (e.message === `{"message": "Unknown Webhook", "code": 10015}`) { // pathetic error handling from SnowTransfer
+		if (e.message === "Unknown Webhook") {
 			// Our webhook is gone. Maybe somebody deleted it, or removed and re-added OOYE from the guild.
 			const newWebhook = await ensureWebhook(channelID, true)
 			return callback(newWebhook) // not caught; if the error happens again just throw it instead of looping
@@ -57,7 +57,7 @@ async function withWebhook(channelID, callback) {
 
 /**
  * @param {string} channelID
- * @param {DiscordTypes.RESTPostAPIWebhookWithTokenJSONBody & {files?: {name: string, file: Buffer | stream.Readable}[]}} data
+ * @param {DiscordTypes.RESTPostAPIWebhookWithTokenJSONBody & {files?: {name: string, file: Buffer | Blob}[]}} data
  * @param {string} [threadID]
  */
 async function sendMessageWithWebhook(channelID, data, threadID) {
@@ -70,7 +70,7 @@ async function sendMessageWithWebhook(channelID, data, threadID) {
 /**
  * @param {string} channelID
  * @param {string} messageID
- * @param {DiscordTypes.RESTPatchAPIWebhookWithTokenMessageJSONBody & {files?: {name: string, file: Buffer | stream.Readable}[]}} data
+ * @param {DiscordTypes.RESTPatchAPIWebhookWithTokenMessageJSONBody & {files?: {name: string, file: Buffer | Blob}[]}} data
  * @param {string} [threadID]
  */
 async function editMessageWithWebhook(channelID, messageID, data, threadID) {

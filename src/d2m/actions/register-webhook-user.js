@@ -1,6 +1,6 @@
 // @ts-check
 
-const assert = require("assert")
+const assert = require("assert").strict
 const {reg} = require("../../matrix/read-registration")
 const Ty = require("../../types")
 
@@ -87,10 +87,9 @@ async function ensureSimJoined(fakeUserID, author, roomID) {
 /**
  * Generate profile data based on webhook displayname and configured avatar.
  * @param {Ty.WebhookAuthor} author
+ * @returns {Promise<Ty.Event.M_Room_Member>}
  */
 async function authorToStateContent(author) {
-	// We prefer to use the member's avatar URL data since the image upload can be cached across channels,
-	// unlike the userAvatar URL which is unique per channel, due to the webhook ID being in the URL.
 	const avatar = file.userAvatar(author)
 
 	const content = {

@@ -43,7 +43,7 @@ const DEFAULT_PRIVACY_LEVEL = 0
 const READ_ONLY_ROOM_EVENTS_DEFAULT_POWER = 0
 
 /** @type {Map<string, Promise<string>>} channel ID -> Promise<room ID> */
-const inflightRoomCreate = new Map()
+const inflightRoomCreate = sync.remember(() => new Map())
 
 /**
  * @param {{id: string, name: string, topic?: string?, type: number, parent_id?: string?}} channel
@@ -138,9 +138,10 @@ async function channelToKState(channel, guild, di) {
 	const globalAdmins = select("member_power", ["mxid", "power_level"], {room_id: "*"}).all()
 	const globalAdminPower = globalAdmins.reduce((a, c) => (a[c.mxid] = c.power_level, a), {})
 
-	const additionalCreators = select("member_power", "mxid", {room_id: "*"}, "AND power_level > 100").pluck().all().concat(spaceCreatorsAndFounders)
+	const additionalCreatorsList = select("member_power", "mxid", {room_id: "*"}, "AND power_level > 100").pluck().all().concat(spaceCreatorsAndFounders)
+	const additionalCreatorsUnique = [...new Set(additionalCreatorsList)].filter(mxid => mxid !== mUtils.bot)
 	const creationContent = {}
-	creationContent.additional_creators = additionalCreators
+	creationContent.additional_creators = additionalCreatorsUnique
 
 	if (channel.type === DiscordTypes.ChannelType.GuildForum) creationContent.type = "m.space"
 
@@ -163,6 +164,7 @@ async function channelToKState(channel, guild, di) {
 			events_default: everyoneCanSend ? 0 : READ_ONLY_ROOM_EVENTS_DEFAULT_POWER,
 			events: {
 				"m.reaction": 0,
+				"org.matrix.msc3381.poll.response": 0,
 				"m.room.redaction": 0, // only affects redactions of own events, required to be able to un-react
 				...pollStartPowerLevel
 			},
@@ -496,8 +498,17 @@ async function unbridgeChannel(channel, guildID, messageBeforeLeave = "This room
 	const powerLevelsUsers = (powerLevels.users ||= {})
 	for (const mxid of Object.keys(powerLevelsUsers)) {
 		if (powerLevelsUsers[mxid] >= (powerLevels.state_default ?? 50) && !allCreators.includes(mxid) && mUtils.eventSenderIsFromDiscord(mxid) && mxid !== mUtils.bot) {
-			delete powerLevelsUsers[mxid]
-			await api.sendState(roomID, "m.room.power_levels", "", powerLevels, mxid) // done individually because each user must demote themselves
+			// can OOYE bot demote them?
+			if (allCreators.includes(mUtils.bot) || powerLevelsUsers[mxid] < powerLevelsUsers[mUtils.bot]) {
+				delete powerLevelsUsers[mxid]
+				await api.sendState(roomID, "m.room.power_levels", "", powerLevels) // bot can demote them
+			} else {
+				// check user is still in room and can send events
+				if (select("sim_member", "mxid", {mxid, room_id: roomID}).get()) {
+					delete powerLevelsUsers[mxid]
+					await api.sendState(roomID, "m.room.power_levels", "", powerLevels, mxid) // done individually because each user must demote themselves
+				}
+			}
 		}
 	}
 

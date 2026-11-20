@@ -4,7 +4,7 @@ const assert = require("assert/strict")
 const {defineEventHandler, getValidatedRouterParams, setResponseStatus, setResponseHeader, createError, H3Event, getValidatedQuery} = require("h3")
 const {z} = require("zod")
 const {ReadableStream} = require("stream/web")
-const {Readable} = require("stream")
+const {Transform} = require("stream")
 const sharp = require("sharp")
 
 /** @type {import("xxhash-wasm").XXHashAPI} */ // @ts-ignore
@@ -21,13 +21,44 @@ const emojiSheetConverter = sync.require("../../m2d/converters/emoji-sheet")
 
 /** @type {import("../../m2d/actions/sticker")} */
 const sticker = sync.require("../../m2d/actions/sticker")
+/** @type {import("../../matrix/utils")} */
+const mxUtils = sync.require("../../matrix/utils")
+
+const INLINE_CONTENT_TYPES = new Set([
+	"text/css",
+	"text/plain",
+	"text/csv",
+	"application/json",
+	"application/ld+json",
+	"image/jpeg",
+	"image/gif",
+	"image/png",
+	"image/apng",
+	"image/webp",
+	"image/avif",
+	"video/mp4",
+	"video/webm",
+	"video/ogg",
+	"video/quicktime",
+	"audio/mp4",
+	"audio/webm",
+	"audio/aac",
+	"audio/mpeg",
+	"audio/ogg",
+	"audio/wave",
+	"audio/wav",
+	"audio/x-wav",
+	"audio/x-pn-wav",
+	"audio/flac",
+	"audio/x-flac",
+])
 
 // Resizing client-side because server-side is too slow, at least with Synapse. Really need it to be fast because webhook avatars show a placeholder in the interim.
 /** @type {{[presetKey: string]: (body: ReadableStream) => ReadableStream}} */
 const MEDIA_THUMBNAIL_PRESETS = {
 	avatar: body =>
-		Readable.toWeb(
-			Readable.fromWeb(body).pipe(
+		body.pipeThrough(
+			Transform.toWeb(
 				sharp()
 				.resize({height: 210, width: 210, fit: "cover"}) // the largest display of the webhook pfp on Discord Android in screen pixels
 				.jpeg({force: false, quality: 90}) // File size works out to up to ~110k for a PNG, less for a JPEG
@@ -37,8 +68,8 @@ const MEDIA_THUMBNAIL_PRESETS = {
 
 const schema = {
 	media: z.object({
-		server_name: z.string(),
-		media_id: z.string()
+		server_name: z.stringFormat("server_name", mxUtils.isServerName),
+		media_id: z.stringFormat("media_id", mxUtils.isMediaId)
 	}),
 	mediaQuery: z.object({
 		preset: z.enum(Object.keys(MEDIA_THUMBNAIL_PRESETS)) // list of possible thumbnail presets
@@ -47,8 +78,8 @@ const schema = {
 		e: z.array(z.string()).or(z.string())
 	}),
 	sticker: z.object({
-		server_name: z.string().regex(/^[^/]+$/),
-		media_id: z.string().regex(/^[A-Za-z0-9_-]+$/)
+		server_name: z.stringFormat("server_name", mxUtils.isServerName),
+		media_id: z.stringFormat("media_id", mxUtils.isMediaId)
 	})
 }
 
@@ -97,6 +128,17 @@ as.router.get(`/download/matrix/:server_name/:media_id`, defineEventHandler(asyn
 	setResponseStatus(event, res.status)
 	setResponseHeader(event, "Content-Type", contentType)
 	setResponseHeader(event, "Transfer-Encoding", "chunked")
+
+	// https://spec.matrix.org/latest/client-server-api/#content-repository
+	setResponseHeader(event, "Content-Security-Policy", "sandbox; default-src 'none'; script-src 'none'; plugin-types application/pdf; style-src 'unsafe-inline'; object-src 'self';")
+
+	// https://spec.matrix.org/v1.19/client-server-api/#serving-inline-content
+	const contentDisposition = res.headers.get("content-disposition")
+	if (!INLINE_CONTENT_TYPES.has(contentType) && contentDisposition?.split(";")[0] !== "attachment") {
+		setResponseHeader(event, "Content-Disposition", contentDisposition?.match(/^inline;/) ? contentDisposition.replace(/^inline;/, "attachment;") : "attachment")
+	} else if (contentDisposition) {
+		setResponseHeader(event, "Content-Disposition", contentDisposition)
+	}
 
 	if (res.ok && query.success) {
 		return MEDIA_THUMBNAIL_PRESETS[query.data.preset](res.body)

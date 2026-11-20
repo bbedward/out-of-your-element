@@ -9,15 +9,16 @@ const getRelativePath = require("get-relative-path")
 
 const {as, db, sync} = require("../../passthrough")
 const {id, permissions} = require("../../../addbot")
-/** @type {import("../auth")} */
-const auth = sync.require("../auth")
+/** @type {import("../web-utils")} */
+const webUtils = sync.require("../web-utils")
 const {reg} = require("../../matrix/read-registration")
 
 const redirect_uri = `${reg.ooye.bridge_origin}/oauth`
 
 const schema = {
 	first: z.object({
-		action: z.string().optional()
+		action: z.string().optional(),
+		next: z.string().optional()
 	}),
 	code: z.object({
 		state: z.string(),
@@ -35,7 +36,7 @@ const schema = {
 
 /**
  * @param {H3Event} event
- * @returns {(string) => {user: {getGuilds: () => Promise<DiscordTypes.RESTGetAPICurrentUserGuildsResult>}}}
+ * @returns {(string) => {user: {getSelf: () => Promise<DiscordTypes.RESTGetAPICurrentUserResult>, getGuilds: () => Promise<DiscordTypes.RESTGetAPICurrentUserGuildsResult>}}}
  */
 function getClient(event) {
 	/* c8 ignore next */
@@ -52,16 +53,16 @@ function getOauth2Token(event) {
 }
 
 as.router.get("/oauth", defineEventHandler(async event => {
-	const session = await auth.useSession(event)
-	let scope = "guilds"
+	const session = await webUtils.useSession(event)
+	const parsedFirstQuery = await getValidatedQuery(event, schema.first.safeParse)
+	let scope = "identify+guilds"
 
 	if (!reg.ooye.web_password || reg.ooye.web_password === session.data.password) {
-		const parsedFirstQuery = await getValidatedQuery(event, schema.first.safeParse)
 		if (parsedFirstQuery.data?.action === "add") {
-			scope = "bot+guilds"
+			scope = "bot+identify+guilds"
 			await session.update({selfService: false})
 		} else if (parsedFirstQuery.data?.action === "add-self-service") {
-			scope = "bot+guilds"
+			scope = "bot+identify+guilds"
 			await session.update({selfService: true})
 		}
 	}
@@ -69,6 +70,10 @@ as.router.get("/oauth", defineEventHandler(async event => {
 	async function tryAgain() {
 		const newState = randomUUID()
 		await session.update({state: newState})
+		if (parsedFirstQuery.data?.next) {
+			webUtils.rejectInvalidNextUrl(parsedFirstQuery.data.next)
+			await session.update({next: parsedFirstQuery.data.next})
+		}
 		return sendRedirect(event, `https://discord.com/oauth2/authorize?client_id=${id}&scope=${scope}&permissions=${permissions}&response_type=code&redirect_uri=${redirect_uri}&state=${newState}`)
 	}
 
@@ -82,12 +87,15 @@ as.router.get("/oauth", defineEventHandler(async event => {
 	const oauthResult = await getOauth2Token(event)(id, redirect_uri, reg.ooye.discord_client_secret, parsedQuery.data.code)
 	const parsedToken = schema.token.parse(oauthResult)
 
-	const userID = Buffer.from(parsedToken.access_token.split(".")[0], "base64").toString()
 	const client = getClient(event)(parsedToken.access_token)
 
+	const self = await client.user.getSelf()
+	const userID = self.id
 	const guilds = await client.user.getGuilds()
-	var managedGuilds = guilds.filter(g => BigInt(g.permissions) & DiscordTypes.PermissionFlagsBits.ManageGuild).map(g => g.id)
-	await session.update({managedGuilds, userID, state: undefined})
+	const managedGuilds = guilds.filter(g => BigInt(g.permissions) & DiscordTypes.PermissionFlagsBits.ManageGuild).map(g => g.id)
+
+	const savedNext = session.data.next
+	await session.update({managedGuilds, userID, state: undefined, next: undefined})
 
 	// Set auto-create for the guild
 	// @ts-ignore
@@ -100,5 +108,5 @@ as.router.get("/oauth", defineEventHandler(async event => {
 		return sendRedirect(event, getRelativePath(event.path, `/guild?guild_id=${parsedQuery.data.guild_id}`), 302)
 	}
 
-	return sendRedirect(event, getRelativePath(event.path, "/"), 302)
+	return sendRedirect(event, getRelativePath(event.path, savedNext || "/"), 302)
 }))

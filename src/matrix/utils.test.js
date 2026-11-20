@@ -2,7 +2,7 @@
 
 const {select} = require("../passthrough")
 const {test} = require("supertape")
-const {eventSenderIsFromDiscord, getEventIDHash, MatrixStringBuilder, getViaServers, roomHasAtLeastVersion, removeCreatorsFromPowerLevels, setUserPower} = require("./utils")
+const {eventSenderIsFromDiscord, getEventIDHash, MatrixStringBuilder, getViaServers, roomHasAtLeastVersion, removeCreatorsFromPowerLevels, setUserPower, parseMxc, findMxc, parseMxid, findMxid} = require("./utils");
 const util = require("util")
 
 /** @param {string[]} mxids */
@@ -415,6 +415,171 @@ test("set user power: privileged users must demote themselves", async t => {
 		}
 	})
 	t.equal(called, 3)
+})
+
+const VALID_MXCS = [
+	{ serverName: "cadence.moe", mediaId: "KrwlqopRyMxnEBcWDgpJZPxh" },
+	{ serverName: "cadence.moe", mediaId: "a_b-c" },
+	{ serverName: "cadence.moe", mediaId: "-" },
+	{ serverName: "cadence.moe", mediaId: "_" },
+	{ serverName: "matrix.example.org:8448", mediaId: "abc" },
+	{ serverName: "xn--mnchen-3ya.example", mediaId: "abc" }, // münchen in punycode
+	{ serverName: "Matrix.Example.org", mediaId: "abc" },
+	{ serverName: "123example.456example", mediaId: "abc" },
+	{ serverName: "localhost", mediaId: "abc" },
+	{ serverName: "localhost:8008", mediaId: "abc" },
+	{ serverName: "192.0.2.1", mediaId: "abc" },
+	{ serverName: "192.0.2.1:8448", mediaId: "abc" },
+	{ serverName: "[::1]", mediaId: "abc" },
+	{ serverName: "[2001:db8::]:8448", mediaId: "abc" },
+	{ serverName: "[2001:db8::1]:8448", mediaId: "abc" },
+	{ serverName: "[2001:db8:0:0:0:0:0:1]", mediaId: "abc" },
+	{ serverName: "[::ffff:192.0.2.1]", mediaId: "abc" },
+];
+
+for (const expected of VALID_MXCS) {
+	const mxc = `mxc://${expected.serverName}/${expected.mediaId}`
+	expected.mxc = mxc
+	test(`parse mxc: ${mxc} is valid`, t => {
+		t.deepEqual(parseMxc(mxc), expected)
+	})
+}
+
+const INVALID_MXCS = [
+	null,
+	undefined,
+	"",
+	"mxc://./abcd",
+	"mxc://../abcd",
+	"mxc://.example.org/abcd",
+	"mxc://example.org./abcd",
+	"mxc://example.org?x=1/abcd",
+	"mxc://example.org#x/abcd",
+	"mxc://example.org\\x/abcd",
+	"mxc://example.org\\abcd",
+	"mxc://%2e%2e/abcd",
+	"mxc://%2E%2E/abcd",
+	"mxc://example.org%2Fx/abcd",
+	"mxc://example.org%2F./abcd",
+	"mxc://example.org%2F../abcd",
+	"mxc://example.org/%2F..",
+	"mxc://exa mple.org/abcd",
+	"mxc://exa%20mple.org/abcd",
+	"mxc:///abcd",
+	"mxc://example.org/a/b",
+	"mxc://example.org/..",
+	"mxc://example.org/",
+	"https://example.org/abcd",
+	"mxc://..\\..\\..\\v3\\account\\whoami#/abcd",
+];
+
+for (const mxc of INVALID_MXCS) {
+	test(`parse mxc: ${mxc} is invalid`, t => {
+		t.equal(parseMxc(mxc), null)
+	})
+}
+
+test("find mxc: finds mxc in surrounding text", t => {
+	t.deepEqual(
+		findMxc("look at mxc://cadence.moe/abc please"),
+		{ mxc: "mxc://cadence.moe/abc", serverName: "cadence.moe", mediaId: "abc" },
+	)
+})
+
+test("find mxc: skips invalid matches, returns first valid one", t => {
+	t.deepEqual(
+		findMxc("mxc://../abc mxc://./abc mxc://cadence.moe/def mxc://cadende.moe/ghi"),
+		{ mxc: "mxc://cadence.moe/def", serverName: "cadence.moe", mediaId: "def" },
+	)
+})
+
+test("find mxc: skips invalid matches, returns undefined", t => {
+	t.equal(findMxc("mxc://../abc mxc://./abc"), null)
+	t.equal(findMxc(""), null)
+	t.equal(findMxc(null), null)
+})
+
+const VALID_MXIDS = [
+	{ localpart: "cadence", serverName: "cadence.moe" },
+	{ localpart: "_ooye_bot", serverName: "cadence.moe" },
+	{ localpart: "Cadence", serverName: "cadence.moe" }, // historical
+	{ localpart: "~!$%&'()*,;<>?[]^`{|}\"#\\", serverName: "cadence.moe" }, // historical
+	{ localpart: "", serverName: "cadence.moe" },
+	{ localpart: "cadence", serverName: "matrix.example.org:8448" },
+	{ localpart: "cadence", serverName: "localhost" },
+	{ localpart: "cadence", serverName: "192.0.2.1:8448" },
+	{ localpart: "cadence", serverName: "[2001:db8::1]:8448" },
+	{ localpart: "a".repeat(255 - "@:cadence.moe".length), serverName: "cadence.moe" },
+];
+
+for (const expected of VALID_MXIDS) {
+	const mxid = `@${expected.localpart}:${expected.serverName}`
+	expected.mxid = mxid
+	test(`parse mxid: ${mxid} is valid`, t => {
+		t.deepEqual(parseMxid(mxid), expected)
+	})
+}
+
+const INVALID_MXIDS = [
+	null,
+	undefined,
+	"",
+	"@",
+	"@@:cadence.moe",
+	"@cadence",
+	"@cadence:",
+	"cadence:cadence.moe",
+	"!cadence:cadence.moe",
+	"#cadence:cadence.moe",
+	" @cadence:cadence.moe",
+	"@cadence:cadence.moe ",
+	"@cad ence:cadence.moe",
+	"@cadénce:cadence.moe",
+	"@cadence:cadence.moe:",
+	"@cadence:cadence.moe:port",
+	"@cadence:cadence.moe/path",
+	"@cadence:.cadence.moe",
+	"@cadence:cadence.moe.",
+	"@a:b:cadence.moe",
+	"@" + "a".repeat(256 - "@:cadence.moe".length) + ":cadence.moe",
+];
+
+for (const mxid of INVALID_MXIDS) {
+	test(`parse mxid: ${mxid} is invalid`, t => {
+		t.equal(parseMxid(mxid), null)
+	})
+}
+
+test("find mxid: finds mxid in surrounding text", t => {
+	t.deepEqual(
+		findMxid("invite `@cadence:cadence.moe` please"),
+		{ mxid: "@cadence:cadence.moe", localpart: "cadence", serverName: "cadence.moe" },
+	)
+})
+
+test("find mxid: skips invalid matches, returns first valid one", t => {
+	const overlong = "@" + "a".repeat(256) + ":cadence.moe"
+	t.deepEqual(
+		findMxid(`${overlong} @::cadence.moe @cadence @cadence:cadence.moe @cadence2:cadence.moe`),
+		{ mxid: "@cadence:cadence.moe", localpart: "cadence", serverName: "cadence.moe" },
+	)
+})
+
+test("find mxid: skips invalid matches, returns undefined", t => {
+	const overlong = "@" + "a".repeat(256) + ":cadence.moe"
+	t.equal(findMxid(`${overlong} @::cadence.moe @cadence`), null)
+})
+
+test("find mxid: skips multiple '@' occurences", t => {
+	t.deepEqual(
+		findMxid(" @@cadence:cadence.moe "),
+		{ mxid: "@cadence:cadence.moe", localpart: "cadence", serverName: "cadence.moe" },
+	)
+
+	t.deepEqual(
+		findMxid(" @@@cadence:cadence.moe "),
+		{ mxid: "@cadence:cadence.moe", localpart: "cadence", serverName: "cadence.moe" },
+	)
 })
 
 module.exports.mockGetEffectivePower = mockGetEffectivePower

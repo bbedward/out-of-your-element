@@ -22,7 +22,7 @@ test("log in with matrix: checks if mxid format looks valid", async t => {
 			mxid: "x@cadence:cadence.moe"
 		}
 	}))
-	t.match(error.data.fieldErrors.mxid, /must match pattern/)
+	t.match(error.data.fieldErrors.mxid, /Invalid mxid/)
 })
 
 test("log in with matrix: checks if mxid domain format looks valid", async t => {
@@ -31,7 +31,7 @@ test("log in with matrix: checks if mxid domain format looks valid", async t => 
 			mxid: "@cadence:cadence."
 		}
 	}))
-	t.match(error.data.fieldErrors.mxid, /must match pattern/)
+	t.match(error.data.fieldErrors.mxid, /Invalid mxid/)
 })
 
 test("log in with matrix: sends message to log in", async t => {
@@ -40,7 +40,7 @@ test("log in with matrix: sends message to log in", async t => {
 	await router.test("post", "/api/log-in-with-matrix", {
 		body: {
 			mxid: "@cadence:cadence.moe",
-			next: "https://bridge.cadence.moe/guild?guild_id=123"
+			next: "https://bridge.example.org/guild?guild_id=123"
 		},
 		api: {
 			async usePrivateChat(mxid) {

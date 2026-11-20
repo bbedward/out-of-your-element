@@ -9,9 +9,14 @@ const {reg} = require("./read-registration.js")
 const baseUrl = `${reg.ooye.server_origin}/_matrix`
 
 class MatrixServerError extends Error {
-	constructor(data, opts) {
+	/**
+	 * @param {number} httpStatus}
+	 */
+	constructor(data, httpStatus, opts = {}) {
 		super(data.error || data.errcode)
 		this.data = data
+		/** @type {number} */
+		this.httpStatus = httpStatus
 		/** @type {string} */
 		this.errcode = data.errcode
 		this.opts = opts
@@ -44,11 +49,11 @@ async function _convertBody(body) {
 async function makeMatrixServerError(res, opts = {}) {
 	delete opts.headers?.["Authorization"]
 	if (res.headers.get("content-type") === "application/json") {
-		return new MatrixServerError(await res.json(), opts)
+		return new MatrixServerError(await res.json(), res.status, opts)
 	} else if (res.headers.get("content-type")?.startsWith("text/")) {
-		return new MatrixServerError({errcode: "CX_SERVER_ERROR", error: `Server returned HTTP status ${res.status}`, message: await res.text()}, opts)
+		return new MatrixServerError({errcode: "CX_SERVER_ERROR", error: `Server returned HTTP status ${res.status}`, message: await res.text()}, res.status, opts)
 	} else {
-		return new MatrixServerError({errcode: "CX_SERVER_ERROR", error: `Server returned HTTP status ${res.status}`, content_type: res.headers.get("content-type")}, opts)
+		return new MatrixServerError({errcode: "CX_SERVER_ERROR", error: `Server returned HTTP status ${res.status}`, content_type: res.headers.get("content-type")}, res.status, opts)
 	}
 }
 
@@ -72,18 +77,22 @@ async function mreq(method, url, bodyIn, extra = {}) {
 	}, extra)
 
 	const res = await fetch(baseUrl + url, opts)
+	if (!res.ok) {
+		throw await makeMatrixServerError(res, {baseUrl, url, ...opts})
+	}
+
 	const text = await res.text()
 	try {
 		/** @type {any} */
 		var root = JSON.parse(text)
 	} catch (e) {
 		delete opts.headers?.["Authorization"]
-		throw new MatrixServerError(text, {baseUrl, url, ...opts})
+		throw new MatrixServerError(text, res.status, {baseUrl, url, ...opts})
 	}
 
 	if (!res.ok || root.errcode) {
 		delete opts.headers?.["Authorization"]
-		throw new MatrixServerError(root, {baseUrl, url, ...opts})
+		throw new MatrixServerError(root, res.status, {baseUrl, url, ...opts})
 	}
 	return root
 }

@@ -8,6 +8,8 @@ const {reg} = require("../../matrix/read-registration")
 
 const passthrough = require("../../passthrough")
 const {discord, sync, db, select} = passthrough
+/** @type {import("../../matrix/mreq")} */
+const mreq = sync.require("../../matrix/mreq")
 /** @type {import("../../matrix/api")} */
 const api = sync.require("../../matrix/api")
 /** @type {import("../../matrix/file")} */
@@ -18,9 +20,11 @@ const createRoom = sync.require("./create-room")
 const expression = sync.require("./expression")
 /** @type {import("../../matrix/kstate")} */
 const ks = sync.require("../../matrix/kstate")
+/** @type {import("../../matrix/utils")} */
+const mxUtils = sync.require("../../matrix/utils")
 
 /** @type {Map<string, Promise<string>>} guild ID -> Promise<space ID> */
-const inflightSpaceCreate = new Map()
+const inflightSpaceCreate = sync.remember(() => new Map())
 
 /**
  * @param {DiscordTypes.RESTGetAPIGuildResult} guild
@@ -65,12 +69,13 @@ async function createSpace(guild, kstate) {
 async function guildToKState(guild, privacyLevel) {
 	assert.equal(typeof privacyLevel, "number")
 	const globalAdmins = select("member_power", ["mxid", "power_level"], {room_id: "*"}).all()
-	const additionalCreators = select("member_power", "mxid", {room_id: "*"}, "AND power_level > 100").pluck().all()
+	const additionalCreatorsList = select("member_power", "mxid", {room_id: "*"}, "AND power_level > 100").pluck().all()
+	const additionalCreatorsUnique = [...new Set(additionalCreatorsList)].filter(mxid => mxid !== mxUtils.bot)
 
 	const guildKState = {
 		"m.room.create/": {
 			type: "m.space",
-			additional_creators: additionalCreators
+			additional_creators: additionalCreatorsUnique
 		},
 		"m.room.name/": {name: guild.name},
 		"m.room.avatar/": {
@@ -237,8 +242,12 @@ async function syncSpaceExpressions(data, checkBeforeSync) {
 			try {
 				existing = await api.getStateEvent(spaceID, "im.ponies.room_emotes", eventKey)
 			} catch (e) {
-				// State event not found. This space doesn't have any existing emojis. We create a dummy empty event for comparison's sake.
-				existing = fn([], guild)
+				if (e instanceof mreq.MatrixServerError && e.httpStatus < 500) {
+					// State event not found. This space doesn't have any existing emojis. We create a dummy empty event for comparison's sake.
+					existing = fn([], guild)
+				} else {
+					throw e
+				}
 			}
 			if (isDeepStrictEqual(existing, content)) return
 		}

@@ -1,6 +1,6 @@
 // @ts-check
 
-const assert = require("assert")
+const assert = require("assert").strict
 const fs = require("fs")
 const {join} = require("path")
 const h3 = require("h3")
@@ -98,7 +98,7 @@ function tryStatic(event, fallthrough) {
 		getContents: id => {
 			if (id.match(/\.pug$/)) {
 				const path = join(publicDir, id)
-				return pugSync.renderPath(event, path, {})
+				return pugSync.renderPath(event, path, null, {})
 			} else {
 				return fs.createReadStream(join(publicDir, id))
 			}
@@ -124,6 +124,8 @@ as.router.get("/icon.png", defineEventHandler(async event => {
 // Routes
 
 pugSync.createRoute(as.router, "/ok", "ok.pug")
+pugSync.createRoute(as.router, "/opt-out", "opt-out.pug")
+pugSync.createRoute(as.router, "/privacy-policy", "privacy-policy.pug")
 
 sync.require("./routes/download-matrix")
 sync.require("./routes/download-discord")
@@ -134,5 +136,7 @@ sync.require("./routes/letter-avatar")
 sync.require("./routes/link")
 sync.require("./routes/log-in-with-matrix")
 sync.require("./routes/oauth")
+sync.require("./routes/opt-out")
 sync.require("./routes/password")
 sync.require("./routes/stats")
+sync.require("./routes/time")

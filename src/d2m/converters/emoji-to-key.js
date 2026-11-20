@@ -34,7 +34,20 @@ async function emojiToKey(emoji, message_id) {
 		// If the reaction was used on Matrix already, it might be using a different arrangement of Variation Selector 16 characters.
 		// We'll use the same arrangement that was originally used, otherwise a duplicate of the emoji will appear as a separate reaction.
 		const originalEncoding = select("reaction", "original_encoding", {message_id, encoded_emoji: encodeURIComponent(name)}).pluck().get()
-		key = originalEncoding || name
+		if (originalEncoding) {
+			key = originalEncoding
+		} else {
+			key = name
+
+			// ™, ® and © are weird, because they exist in two forms: emoji and text...
+			// ... and discord prefers the text version
+			// on m->d we're forced to convert emoji versions to text
+			// the branch above already handles the case where the initial reaction was on matrix,
+			// but in case that it's on discord, convert the text to a proper emoji before bridging it
+			if (key === "™") key = "™️"
+			if (key === "®") key = "®️"
+			if (key === "©") key = "©️"
+		}
 	}
 	return key
 }

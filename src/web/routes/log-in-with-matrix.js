@@ -12,12 +12,14 @@ const {sync} = require("../../passthrough")
 const assert = require("assert").strict
 /** @type {import("../pug-sync")} */
 const pugSync = sync.require("../pug-sync")
-/** @type {import("../auth")} */
-const auth = sync.require("../auth")
+/** @type {import("../web-utils")} */
+const webUtils = sync.require("../web-utils")
+/** @type {import("../../matrix/utils")} */
+const mxUtils = sync.require("../../matrix/utils")
 
 const schema = {
 	form: z.object({
-		mxid: z.string().regex(/^@([^:]+):([a-z0-9:-]+\.[a-z0-9.:-]+)$/),
+		mxid: z.stringFormat("mxid", mxUtils.parseMxid),
 		next: z.string().optional()
 	}),
 	token: z.object({
@@ -36,7 +38,7 @@ function getAPI(event) {
 }
 
 /** @type {LRUCache<string, string>} token to mxid */
-const validToken = new LRUCache({max: 200})
+const validToken = sync.remember(() => new LRUCache({max: 200}))
 
 /*
 	1st request, GET, they clicked the button, need to input their mxid
@@ -47,17 +49,18 @@ const validToken = new LRUCache({max: 200})
 as.router.get("/log-in-with-matrix", defineEventHandler(async event => {
 	let {token, next} = await getValidatedQuery(event, schema.token.parse)
 
+	webUtils.rejectInvalidNextUrl(next)
+
 	if (!token) {
 		// We are in the first request and need to tell them to input their mxid
 		return pugSync.render(event, "log-in-with-matrix.pug", {next})
 	}
 
-	const userAgent = getRequestHeader(event, "User-Agent")
-	if (userAgent?.match(/bot|matrix/)) throw createError({status: 400, data: "Sorry URL previewer, you can't have this URL."})
+	webUtils.rejectUrlPreviewer(event)
 
 	if (!validToken.has(token)) return sendRedirect(event, `${reg.ooye.bridge_origin}/log-in-with-matrix`, 302)
 
-	const session = await auth.useSession(event)
+	const session = await webUtils.useSession(event)
 	const mxid = validToken.get(token)
 	assert(mxid)
 	validToken.delete(token)
@@ -69,8 +72,11 @@ as.router.get("/log-in-with-matrix", defineEventHandler(async event => {
 }))
 
 as.router.post("/api/log-in-with-matrix", defineEventHandler(async event => {
+	webUtils.rejectCrossSiteRequest(event)
 	const api = getAPI(event)
 	const {mxid, next} = await readValidatedBody(event, schema.form.parse)
+
+	webUtils.rejectInvalidNextUrl(next)
 
 	// Don't extend a duplicate invite for the same user
 	for (const alreadyInvited of validToken.values()) {

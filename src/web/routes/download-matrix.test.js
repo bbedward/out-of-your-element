@@ -30,12 +30,53 @@ test("web download matrix: works if a known attachment", async t => {
 		api: {
 			// @ts-ignore
 			async getMedia(mxc, init) {
-				return new Response("", {status: 200, headers: {"content-type": "image/png"}})
+				return new Response("", {status: 200, headers: {"content-type": "image/png", "content-disposition": `attachment; filename="wa.png"`}})
 			}
 		}
 	})
 	t.equal(event.node.res.statusCode, 200)
 	t.equal(event.node.res.getHeader("content-type"), "image/png")
+	t.equal(event.node.res.getHeader("content-disposition"), `attachment; filename="wa.png"`)
+})
+
+test("web download matrix: inline disposition converted to attachment for html", async t => {
+	const event = {}
+	await router.test("get", "/download/matrix/:server_name/:media_id", {
+		params: {
+			server_name: "cadence.moe",
+			media_id: "KrwlqopRyMxnEBcWDgpJZPxh",
+		},
+		event,
+		api: {
+			// @ts-ignore
+			async getMedia(mxc, init) {
+				return new Response("", {status: 200, headers: {"content-type": "text/html", "content-disposition": `inline; filename="evil.html"`}})
+			}
+		}
+	})
+	t.equal(event.node.res.statusCode, 200)
+	t.equal(event.node.res.getHeader("content-type"), "text/html")
+	t.equal(event.node.res.getHeader("content-disposition"), `attachment; filename="evil.html"`)
+})
+
+test("web download matrix: missing disposition set to attachment for html", async t => {
+	const event = {}
+	await router.test("get", "/download/matrix/:server_name/:media_id", {
+		params: {
+			server_name: "cadence.moe",
+			media_id: "KrwlqopRyMxnEBcWDgpJZPxh",
+		},
+		event,
+		api: {
+			// @ts-ignore
+			async getMedia(mxc, init) {
+				return new Response("", {status: 200, headers: {"content-type": "text/html"}})
+			}
+		}
+	})
+	t.equal(event.node.res.statusCode, 200)
+	t.equal(event.node.res.getHeader("content-type"), "text/html")
+	t.equal(event.node.res.getHeader("content-disposition"), `attachment`)
 })
 
 /**
@@ -64,7 +105,7 @@ test("web sheet: single emoji", async t => {
 		mxcDownloader: mockGetAndConvertEmoji
 	})
 	t.equal(event.node.res.statusCode, 200)
-	t.equal(sheet.subarray(0, 90).toString("base64"), "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAACXBIWXMAAAPoAAAD6AG1e1JrAAALoklEQVR4nM1ZaVBU2RU+LZSIGnAvFUtcRkSk6abpbkDH")
+	t.equal(sheet.subarray(0, 90).toString("base64"), "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAACXBIWXMAAAPoAAAD6AG1e1JrAAALoklEQVRogc1ZaVBU2RU+LZSIGnAvFUtcRkSk6abpbkDH")
 })
 
 test("web sheet: multiple sources", async t => {

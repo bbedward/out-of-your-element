@@ -8,6 +8,10 @@ Modern Matrix-to-Discord appservice bridge, created by [@cadence:cadence.moe](ht
 
 ![](https://cadence.moe/i/f42a3f)
 
+## AI policy
+
+Out Of Your Element is 100% organically cultivated ethical hand-fed code. Let's work together to conserve that!
+
 ## Why a new bridge?
 
 * Modern: Supports new Discord features like replies, threads and stickers, and new Matrix features like edits, spaces and space membership.
@@ -32,7 +36,7 @@ I've also added some interesting features that I haven't seen in any other bridg
 * Matrix custom emojis from private rooms are still visible on Discord as a sprite sheet
 * To save space, larger files from Discord are linked instead of reuploaded to Matrix (links don't expire)
 
-For more information about features, [see the user guide.](https://gitdab.com/cadence/out-of-your-element/src/branch/main/docs/user-guide.md)
+For more information about features, [see the user guide.](https://docs.ooye.org/for-users/user-guide/)
 
 ## Caveats
 
@@ -42,4 +46,4 @@ For more information about features, [see the user guide.](https://gitdab.com/ca
 
 ## Get started!
 
-[Read the installation instructions →](https://gitdab.com/cadence/out-of-your-element/src/branch/main/docs/get-started.md)
+[Read the installation instructions →](https://docs.ooye.org/for-hosters/install/)

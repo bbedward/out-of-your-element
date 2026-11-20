@@ -1,5 +1,6 @@
 // @ts-check
 
+const DiscordTypes = require("discord-api-types/v10")
 const passthrough = require("../passthrough")
 const {reg, writeRegistration} = require("./read-registration.js")
 const Ty = require("../types")
@@ -7,18 +8,42 @@ const Ty = require("../types")
 const {sync, db, select} = passthrough
 /** @type {import("./mreq")} */
 const mreq = sync.require("./mreq")
+/** @type {import("./api")} */
+const api = sync.require("./api")
 
 const DISCORD_IMAGES_BASE = "https://cdn.discordapp.com"
 const IMAGE_SIZE = 1024
 
+const PREAPPROVED_ORIGINS = new Set([
+	"https://avatars.akamai.steamstatic.com",
+	"https://avatars.githubusercontent.com",
+	"https://cadence.moe",
+	"https://cdn.discordapp.com",
+	"https://cdn.modrinth.com",
+	"https://cdn.pluralkit.me",
+	"https://cdn.tupperbox.app",
+	"https://codeberg.org",
+	"https://files.catbox.moe",
+	"https://i.imgur.com",
+	"https://media.discordapp.net",
+	"https://media.forgecdn.net",
+	"https://pbs.twimg.com",
+	"https://upload.wikimedia.org",
+])
+
 /** @type {Map<string, Promise<string>>} */
-const inflight = new Map()
+const inflight = sync.remember(() => new Map())
 
 /**
- * @param {string} url
+ * @param {string} urlString
  */
-function _removeExpiryParams(url) {
-	return url.replace(/\?(?:(?:ex|is|sg|hm)=[a-f0-9]+&?)*$/, "")
+function _removeExpiryParams(urlString) {
+	const url = new URL(urlString)
+	url.searchParams.delete("ex")
+	url.searchParams.delete("is")
+	url.searchParams.delete("sg")
+	url.searchParams.delete("hm")
+	return url.toString()
 }
 
 /**
@@ -65,7 +90,31 @@ async function uploadDiscordFileToMxc(path) {
  * @returns {Promise<Ty.R.FileUploaded>}
  */
 async function _actuallyUploadDiscordFileToMxc(url) {
-	const res = await fetch(url, {})
+	function throwDownloadError(message) {
+		const e = new Error(message)
+		e["downloadURL"] = url
+		throw e
+	}
+
+	// Download file (with body stream)
+
+	const u = new URL(url)
+	if (PREAPPROVED_ORIGINS.has(u.origin) || u.host.endsWith(".discordapp.net")) {
+		// Request the file directly, we trust these domains to not point at SSRF
+		var res = await fetch(url, {})
+		if (!res.ok) throwDownloadError(`File download had failure status code ${res.status}`)
+	} else {
+		// Try to receive unapproved origins via homeserver url preview, since it knows how to deal with SSRF
+		const previewed = await api.previewUrlIfEnabled(url)
+		if (previewed === false) throwDownloadError(`File download blocked from unapproved host "${u.host}". Enable URL previews on the homeserver to download this safely.`)
+		if (!previewed["og:image"]) throwDownloadError(`File download via URL preview expected an image but didn't get one.`)
+		// There is an image
+		// @ts-ignore
+		var res = await api.getMedia(previewed["og:image"])
+	}
+
+	// Upload file
+
 	try {
 		/** @type {Ty.R.FileUploaded} */
 		const root = await mreq.mreq("POST", "/media/v3/upload", res.body, {
@@ -90,14 +139,30 @@ async function _actuallyUploadDiscordFileToMxc(url) {
 	}
 }
 
+/**
+ * @param {DiscordTypes.APIGuild} guild
+ * @returns {string | null}
+ */
 function guildIcon(guild) {
+	if (!guild.icon) return null
 	return `/icons/${guild.id}/${guild.icon}.png?size=${IMAGE_SIZE}`
 }
 
+/**
+ * @param {DiscordTypes.APIUser | Ty.WebhookAuthor} user
+ * @returns {string | null}
+ */
 function userAvatar(user) {
+	if (!user.avatar) return null
 	return `/avatars/${user.id}/${user.avatar}.png?size=${IMAGE_SIZE}`
 }
 
+/**
+ * @param {string} guildID
+ * @param {DiscordTypes.APIUser} user
+ * @param {Omit<DiscordTypes.APIGuildMember, "user"> | undefined} member
+ * @returns {string}
+ */
 function memberAvatar(guildID, user, member) {
 	if (!member?.avatar) return userAvatar(user)
 	return `/guilds/${guildID}/users/${user.id}/avatars/${member?.avatar}.png?size=${IMAGE_SIZE}`

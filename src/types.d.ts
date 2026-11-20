@@ -18,6 +18,7 @@ export type AppServiceRegistrationConfig = {
 	}
 	protocols: [string]
 	rate_limited: boolean
+	receive_ephemeral: boolean
 	socket?: string | number,
 	ooye: {
 		namespace_prefix: string
@@ -35,6 +36,8 @@ export type AppServiceRegistrationConfig = {
 		web_password: string
 		time_zone?: string
 		receive_presences: boolean
+		plu_ral_api_key?: string
+		bridge_admin_contact?: string
 	}
 	old_bridge?: {
 		as_token: string
@@ -59,6 +62,7 @@ export type InitialAppServiceRegistrationConfig = {
 	}
 	protocols: [string]
 	rate_limited: boolean
+	receive_ephemeral: boolean
 	socket?: string | number,
 	ooye: {
 		namespace_prefix: string
@@ -120,6 +124,28 @@ export type PkMessage = {
 	system: PkSystem
 	member: PkMember
 	sender: string
+}
+
+export type PluRalWebhookMessage = {
+	original_id: string | null
+	proxy_id: string
+	author_id: string
+	channel_id: string
+	member_id: string
+	reason: string
+	webhook_id: string
+	member: PluRalMember
+}
+
+export type PluRalMember = {
+	id: string
+	name: string
+	pronouns: string
+	bio: string
+	birthday: string
+	color: number | null
+	avatar_url: string
+	private: boolean
 }
 
 export namespace Event {
@@ -396,6 +422,14 @@ export namespace Event {
 		rotation_period_ms?: number
 		rotation_period_msgs?: number
 	}
+
+	export type Outer_M_Typing = {
+		content: {
+			user_ids: string[]
+		}
+		room_id: string
+		type: "m.typing"
+	}
 }
 
 export namespace R {
@@ -497,6 +531,20 @@ export namespace R {
 		extensions: {
 			[extension_key: string]: any
 		}
+	}
+
+	/** Any properties may be optional with no correlation. */
+	export type UrlPreviewOpenGraph = {
+		/** Byte size of image, if present. */
+		"matrix:image:size"?: number
+		/** mxc:// URI of image, if present. Expires in a matter of hours. */
+		"og:image"?: string
+		"og:image:type"?: string
+		"og:image:width"?: number
+		"og:image:height"?: number
+		"og:title"?: string
+		"og:description"?: string
+		"og:type"?: string
 	}
 }
 

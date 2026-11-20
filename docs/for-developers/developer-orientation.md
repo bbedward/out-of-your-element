@@ -1,11 +1,13 @@
-# Development setup
+# Developer orientation
+
+## Development setup
 
 * Install development dependencies with `npm install --save-dev` so you can run the tests.
 * Most files you change, such as actions, converters, and web, will automatically be reloaded.
 * If developing on a different computer to the one running the homeserver, use SSH port forwarding so that Synapse can connect on its `localhost:6693` to reach the running bridge on your computer. Example: `ssh -T -v -R 6693:localhost:6693 me@matrix.cadence.moe`
 * I recommend developing in Visual Studio Code so that the JSDoc x TypeScript annotation comments just work automatically. I don't know which other editors or language servers support annotations and type inference.
 
-# Efficiency details
+## Efficiency details
 
 Using WeatherStack as a thin layer between the bridge application and the Discord API lets us control exactly what data is cached in memory. Only necessary information is cached. For example, member data, user data, message content, and past edits are never stored in memory. This keeps the memory usage low and also prevents it ballooning in size over the bridge's runtime.
 
@@ -18,7 +20,7 @@ File uploads (like avatars from bridged members) are checked locally and dedupli
 Switching to [WAL mode](https://www.sqlite.org/wal.html) could improve your database access speed even more. Run `node scripts/wal.js` if you want to switch to WAL mode. (This will also enable `synchronous = NORMAL`.)
 
 
-# Repository structure
+## Repository structure
 
     .
     * Runtime configuration, like tokens and user info:
@@ -73,13 +75,13 @@ Switching to [WAL mode](https://www.sqlite.org/wal.html) could improve your data
             * Hopefully you won't need the rest of these. Code quality varies wildly.
             └── *.js
 
-# Read next
+## Read next
 
-If you haven't set up Out Of Your Element yet, you might find [Simplified homeserver setup](https://gitdab.com/cadence/out-of-your-element/src/branch/main/docs/simplified-homeserver-setup.md) helpful.
+If you haven't set up Out Of Your Element yet, you might find [Simplified homeserver setup](./simplified-homeserver-setup.md) helpful.
 
 If you don't know what the Matrix event JSON generally looks like, turn on developer tools in your client (Element has pretty good ones). Right click a couple of messages and see what they look like on the inside.
 
-I recommend first reading [How to add a new event type](https://gitdab.com/cadence/out-of-your-element/src/branch/main/docs/how-to-add-a-new-event-type.md) as this will fill you in on key information in how the codebase is organised, which data structures are important, and what level of abstraction we're working on.
+I recommend first reading [How to add a new event type](./how-to-add-a-new-event-type.md) as this will fill you in on key information in how the codebase is organised, which data structures are important, and what level of abstraction we're working on.
 
 If you haven't seen the [Discord API documentation](https://discord.com/developers/docs/) before, have a quick look at one of the pages on there. Same with the [Matrix Client-Server APIs](https://spec.matrix.org/latest/client-server-api/). You don't need to know these inside out, they're primarily references, not stories. But it is useful to have an idea of what a couple of the API endpoints look like, the kind of data they tend to accept, and the kind of data they tend to return.
 
@@ -87,16 +89,16 @@ Then you might like to peruse the other files in the docs folder. Most of these 
 
 Whether you read those or not, I'm more than happy to help you 1-on-1 with coding your dream feature. Join the chatroom [#out-of-your-element:cadence.moe](https://matrix.to/#/#out-of-your-element:cadence.moe) or PM me [@cadence:cadence.moe](https://matrix.to/#/@cadence:cadence.moe) and ask away.
 
-# Dependency justification
+## Dependency justification
 
-Total transitive production dependencies: 144
+Total transitive production dependencies: 114
 
 ### <font size="+2">🦕</font>
 
-* (35) better-sqlite3: SQLite is the best database, and this is the best library for it.
 * (29) sharp: Image resizing and compositing. OOYE needs this for the emoji sprite sheets. It has libvips prebuilts for each platform.
 * (26) @cloudrac3r/pug: Language for dynamic web pages. This is my fork. (I released code that hadn't made it to npm, and removed the heavy pug-filters feature.)
 * (9) h3: Web server. OOYE needs this for the web UI, appservice listener, authmedia proxy, and more.
+* (1) better-sqlite3: SQLite is the best database, and this is the best library for it.
 
 ### <font size="-1">🪱</font>
 
@@ -108,22 +110,43 @@ Total transitive production dependencies: 144
 * (0) @cloudrac3r/mixin-deep: This is my fork. (It fixes a bug in regular mixin-deep.)
 * (0) @cloudrac3r/pngjs: Lottie stickers are converted to bitmaps with the vendored Rlottie WASM build, then the bitmaps are converted to PNG with pngjs.
 * (0) @cloudrac3r/stream-type: Determine type of Matrix files that don't specify it in info. Switched from stream-mime-type to this.
+* (0) @cloudrac3r/tell-me-when: Parse English natural language dates and times for the m->d //time command.
 * (0) @cloudrac3r/turndown: This HTML-to-Markdown converter looked the most suitable. I forked it to change the escaping logic to match the way Discord works.
 * (3) @stackoverflow/stacks: Stack Overflow design language and icons.
 * (0) ansi-colors: Helps with interactive prompting for the initial setup, and it's already pulled in by enquirer.
 * (1) chunk-text: It does what I want.
 * (0) cloudstorm: Discord gateway library with bring-your-own-caching that I trust.
+* (0) denque: Much faster than using arrays as a queue.
 * (0) discord-api-types: Bitfields needed at runtime and types needed for development.
 * (0) domino: DOM implementation that's already pulled in by turndown.
 * (2) enquirer: Interactive prompting for the initial setup rather than forcing users to edit YAML non-interactively.
 * (0) entities: Looks fine. No dependencies.
 * (0) get-relative-path: Looks fine. No dependencies.
 * (1) heatsync: Module hot-reloader that I trust.
+* (0) htmx.org: Declarative partial page reloads that do just enough. I'm not totally happy with this one, but not sure what I'd do instead.
 * (0) lru-cache: For holding unused nonce in memory and letting them be overwritten later if never used.
 * (1) mime-types: List of mime type mappings. Needed to serve static files.
 * (0) prettier-bytes: It does what I want and has no dependencies.
 * (0) snowtransfer: Discord API library with bring-your-own-caching that I trust.
+* (0) temporal-polyfill-lite: Needed for the //time command. The Temporal API has only been stabilised as of Node.js v26.
 * (0) try-to-catch: Not strictly necessary, but it's already pulled in by supertape, so I may as well.
 * (0) uqr: QR code SVG generator. Used on the website to scan in an invite link.
 * (0) xxhash-wasm: Used where cryptographically secure hashing is not required.
-* (0) zod: Input validation for the web server. It's popular and easy to use.
+* (0) zod: Input validation. Author using LLMs since Feb 2026, but there are no reasonable alternatives. Forking an old version would be irresponsible for security.
+
+### Outdated versions
+
+* @chriscdn/promise-semaphore
+    * Highest usable version is 3.1.3 because the author **dropped CJS** in 4.0.0.
+* @stackoverflow/stacks
+    * Highest usable version is 2.9.0 (and 6.9.0 for stacks-icons) because the company **ruined their design** in 3.0.0.
+* cross-env
+    * Highest usable version is 7.0.3 because the author **dropped CJS** in 10.0.0.
+* entities
+    * Using version 5.0.0. The author messed things up in 6.0.0, started using LLMs in 7.0.0, and **dropped CJS** in 8.0.0.
+* h3
+    * Using major version 1. Version 2 has been stuck as **release candidates for months**, and all the code comments are Claude.
+* htmx.org
+    * Using major version 2. Version 4 exists, and **I'd be okay updating to it**, but the author changed a lot and the entire site would need to be re-tested.
+* try-to-catch
+    * Using 4.0.5. Version 4.1.0 added annoying types and has no benefit.

@@ -6,7 +6,7 @@
 
 const util = require("util")
 const Ty = require("../types")
-const {discord, db, sync, as, select} = require("../passthrough")
+const {discord, db, sync, as, select, from} = require("../passthrough")
 const {tag} = require("@cloudrac3r/html-template-tag")
 const {Semaphore} = require("@chriscdn/promise-semaphore")
 
@@ -24,6 +24,8 @@ const vote = sync.require("./actions/vote")
 const matrixCommandHandler = sync.require("../matrix/matrix-command-handler")
 /** @type {import("../matrix/utils")} */
 const utils = sync.require("../matrix/utils")
+/** @type {import("../matrix/mreq")}) */
+const mreq = sync.require("../matrix/mreq")
 /** @type {import("../matrix/api")}) */
 const api = sync.require("../matrix/api")
 /** @type {import("../d2m/actions/create-room")} */
@@ -32,61 +34,17 @@ const createRoom = sync.require("../d2m/actions/create-room")
 const roomUpgrade = require("../matrix/room-upgrade")
 /** @type {import("../d2m/actions/retrigger")} */
 const retrigger = sync.require("../d2m/actions/retrigger")
+/** @type {import("../matrix/homeserver-status")} */
+const homeserverStatus = sync.require("../matrix/homeserver-status")
+/** @type {import("./actions/typing")} */
+const typing = sync.require("./actions/typing")
+/** @type {import("./actions/nickname")} */
+const nickname = sync.require("./actions/nickname")
+/** @type {import("../js/errors")} */
+const errors = sync.require("../js/errors")
 const {reg} = require("../matrix/read-registration")
 
-let lastReportedEvent = 0
-
-/**
- * This function is adapted from Evan Kaufman's fantastic work.
- * The original function and my adapted function are both MIT licensed.
- * @url https://github.com/EvanK/npm-loggable-error/
- * @param {number} [depth]
- * @returns {string}
-*/
-function stringifyErrorStack(err, depth = 0) {
-	let collapsed = " ".repeat(depth);
-	if (!(err instanceof Error)) {
-		return collapsed + err
-	}
-
-	// add full stack trace if one exists, otherwise convert to string
-	let stackLines = String(err?.stack ?? err).replace(/^/gm, " ".repeat(depth)).trim().split("\n")
-	let cloudstormLine = stackLines.findIndex(l => l.includes("/node_modules/cloudstorm/"))
-	if (cloudstormLine !== -1) {
-		stackLines = stackLines.slice(0, cloudstormLine - 2)
-	}
-	collapsed += stackLines.join("\n")
-
-	const props = Object.getOwnPropertyNames(err).filter(p => !["message", "stack"].includes(p))
-
-	// only break into object notation if we have additional props to dump
-	if (props.length) {
-		const dedent = " ".repeat(depth);
-		const indent = " ".repeat(depth + 2);
-
-		collapsed += " {\n";
-
-		// loop and print each (indented) prop name
-		for (let property of props) {
-			collapsed += `${indent}[${property}]: `;
-
-			// if another error object, stringify it too
-			if (err[property] instanceof Error) {
-				collapsed += stringifyErrorStack(err[property], depth + 2).trimStart();
-			}
-			// otherwise stringify as JSON
-			else {
-				collapsed += JSON.stringify(err[property]);
-			}
-
-			collapsed += "\n";
-		}
-
-		collapsed += `${dedent}}\n`;
-	}
-
-	return collapsed;
-}
+const errorReportStatus = sync.remember(() => ({lastReportedEvent: 0}))
 
 function printError(type, source, e, payload) {
 	console.error(`Error while processing a ${type} ${source} event:`)
@@ -111,8 +69,8 @@ async function sendError(roomID, source, type, e, payload) {
 		printError(type, source, e, payload)
 	}
 
-	if (Date.now() - lastReportedEvent < 5000) return null
-	lastReportedEvent = Date.now()
+	if (Date.now() - errorReportStatus.lastReportedEvent < 5000) return null
+	errorReportStatus.lastReportedEvent = Date.now()
 
 	let errorIntroLine = e.toString()
 	if (e.cause) {
@@ -139,7 +97,7 @@ async function sendError(roomID, source, type, e, payload) {
 		builder.addLine(errorIntroLine)
 
 		// Where
-		const stack = cleanErrorStack(stringifyErrorStack(e))
+		const stack = cleanErrorStack(errors.stringifyErrorStack(e))
 		builder.addLine(`Error trace:\n${stack}`, tag`<details><summary>Error trace</summary><pre>${stack}</pre></details>`)
 
 		// How
@@ -166,7 +124,15 @@ async function sendError(roomID, source, type, e, payload) {
 				key: "🔁"
 			}
 		})
-	} catch (e) {}
+	} catch (e) {
+		if (
+			e.toString().includes("fetch failed")
+			|| (e instanceof mreq.MatrixServerError && [502, 503].includes(e.httpStatus) && e.errcode === "CX_SERVER_ERROR")
+		) {
+			// Matrix homeserver is down (reverse proxy indicated failure)
+			homeserverStatus.homeserverStatus.setErrorWithPacket([source, payload])
+		}
+	}
 }
 
 function guard(type, fn) {
@@ -179,7 +145,7 @@ function guard(type, fn) {
 	}
 }
 
-const errorRetrySema = new Semaphore()
+const errorRetrySema = sync.remember(() => new Semaphore())
 
 /**
  * @param {Ty.Event.Outer<Ty.Event.M_Reaction>} reactionEvent
@@ -218,15 +184,19 @@ sync.addTemporaryListener(as, "type:m.room.message", guard("m.room.message",
  * @param {Ty.Event.Outer_M_Room_Message | Ty.Event.Outer_M_Room_Message_File} event it is a m.room.message because that's what this listener is filtering for
  */
 async event => {
-	if (utils.eventSenderIsFromDiscord(event.sender)) return
-	const messageResponses = await sendEvent.sendEvent(event)
-	if (!messageResponses.length) return
-	if (event.type === "m.room.message" && event.content.msgtype === "m.text") {
-		// @ts-ignore
-		await matrixCommandHandler.execute(event)
+	if (!utils.eventSenderIsFromDiscord(event.sender)) {
+		const messageResponses = await sendEvent.sendEvent(event)
+		if (!messageResponses.length) return
+		if (event.type === "m.room.message" && event.content.msgtype === "m.text") {
+			// @ts-ignore
+			await matrixCommandHandler.execute(event)
+		}
+		retrigger.finishedBridging(event.event_id)
+		await api.ackEvent(event)
 	}
-	retrigger.finishedBridging(event.event_id)
-	await api.ackEvent(event)
+	if (!event.content["m.relates_to"]) { // Ignore edits since they don't update the timeline on Discord
+		sendEvent.latestSenderPerRoom.set(event.room_id, event.sender)
+	}
 }))
 
 sync.addTemporaryListener(as, "type:m.sticker", guard("m.sticker",
@@ -298,8 +268,9 @@ async event => {
 		// Try to bridge a failed event again?
 		await onRetryReactionAdd(event)
 	} else {
-		matrixCommandHandler.onReactionAdd(event)
+		if (matrixCommandHandler.onReactionAdd(event)) return
 		await addReaction.addReaction(event)
+		await nickname.setNicknameFromRoomID(event.room_id)
 	}
 }))
 
@@ -451,7 +422,7 @@ async event => {
 
 	if (utils.eventSenderIsFromDiscord(event.state_key)) return
 
-	const exists = select("channel_room", "room_id", {room_id: event.room_id}) ?? select("guild_space", "space_id", {space_id: event.room_id})
+	const exists = select("channel_room", "room_id", {room_id: event.room_id}).pluck().get() ?? select("guild_space", "space_id", {space_id: event.room_id}).pluck().get()
 	if (!exists) return // don't cache members in unbridged rooms
 
 	// Member is here
@@ -515,7 +486,21 @@ async event => {
 	await createRoom.unbridgeChannel(channel, channel["guild_id"], "Encrypted rooms are not supported. This room was removed from the bridge.")
 }))
 
-module.exports.stringifyErrorStack = stringifyErrorStack
+sync.addTemporaryListener(as, "ephemeral_type:m.typing", guard("m.typing",
+/**
+ * @param {Ty.Event.Outer_M_Typing} event
+ */
+async event => {
+	const row = select("channel_room", ["channel_id", "guild_id"], {room_id: event.room_id}).get()
+	if (!row) return
+	if (event.content.user_ids.some(mxid => !utils.eventSenderIsFromDiscord(mxid))) {
+		await nickname.setNicknameFromGuildID(row.guild_id)
+		typing.startTyping(row.channel_id)
+	} else {
+		typing.stopTyping(row.channel_id)
+	}
+}))
+
 module.exports.cleanErrorStack = cleanErrorStack
 module.exports.sendError = sendError
 module.exports.printError = printError

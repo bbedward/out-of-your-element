@@ -3,8 +3,9 @@
 const assert = require("assert").strict
 const DiscordTypes = require("discord-api-types/v10")
 const Ty = require("../types")
-const {pipeline} = require("stream").promises
 const sharp = require("sharp")
+const tw = require("@cloudrac3r/tell-me-when")
+const {tag} = require("@cloudrac3r/html-template-tag")
 
 const {discord, sync, db, select} = require("../passthrough")
 /** @type {import("./api")}) */
@@ -13,8 +14,9 @@ const api = sync.require("./api")
 const mxUtils = sync.require("./utils")
 /** @type {import("../discord/utils")} */
 const dUtils = sync.require("../discord/utils")
-/** @type {import("./kstate")} */
-const ks = sync.require("./kstate")
+/** @type {import("../d2m/actions/retrigger")} */
+const retrigger = sync.require("../d2m/actions/retrigger")
+
 const {reg} = require("./read-registration")
 
 const PREFIXES = ["//", "/"]
@@ -33,7 +35,17 @@ function getSlotCount(tier) {
 	return TIER_EMOJI_SLOTS.get(tier) || 50
 }
 
-let buttons = []
+/**
+ * @typedef Button
+ * @property {string} roomID
+ * @property {string} eventID
+ * @property {string} mxid
+ * @property {string} key
+ * @property {(any) => any} resolve
+ * @property {number} created
+ */
+
+const buttonStore = sync.remember(() => /** @type {{buttons: Button[]}} */ ({buttons: []}))
 
 /**
  * @param {string} roomID where to add the button
@@ -51,22 +63,23 @@ async function addButton(roomID, eventID, key, mxid) {
 		}
 	})
 	return new Promise(resolve => {
-		buttons.push({roomID, eventID, mxid, key, resolve, created: Date.now()})
+		buttonStore.buttons.push({roomID, eventID, mxid, key, resolve, created: Date.now()})
 	})
 }
 
 // Clear out old buttons every so often to free memory
 setInterval(() => {
 	const now = Date.now()
-	buttons = buttons.filter(b => now - b.created < 2*60*60*1000)
+	buttonStore.buttons = buttonStore.buttons.filter(b => now - b.created < 2*60*60*1000)
 }, 10*60*1000).unref()
 
 /** @param {Ty.Event.Outer<Ty.Event.M_Reaction>} event */
 function onReactionAdd(event) {
-	const button = buttons.find(b => b.roomID === event.room_id && b.mxid === event.sender && b.eventID === event.content["m.relates_to"]?.event_id && b.key === event.content["m.relates_to"]?.key)
+	const button = buttonStore.buttons.find(b => b.roomID === event.room_id && b.mxid === event.sender && b.eventID === event.content["m.relates_to"]?.event_id && b.key === event.content["m.relates_to"]?.key)
 	if (button) {
-		buttons = buttons.filter(b => b !== button) // remove button data so it can't be clicked again
+		buttonStore.buttons = buttonStore.buttons.filter(b => b !== button) // remove button data so it can't be clicked again
 		button.resolve(event)
+		return true
 	}
 }
 
@@ -139,7 +152,7 @@ const commands = [{
 			/** @type {{url: string, name: string}[]} */
 			const toUpload = []
 			const nameMatch = realBody.match(/:([a-zA-Z0-9_]{2,}):/)
-			const mxcMatch = realBody.match(/(mxc:\/\/.*?)\b/)
+			const mxcUrl = mxUtils.findMxc(realBody)?.mxc
 			if (event.content["m.relates_to"]?.["m.in_reply_to"]?.event_id) {
 				const repliedToEventID = event.content["m.relates_to"]["m.in_reply_to"].event_id
 				const repliedToEvent = await api.getEvent(event.room_id, repliedToEventID)
@@ -147,7 +160,7 @@ const commands = [{
 					toUpload.push({url: repliedToEvent.content.url, name: nameMatch[1]})
 				} else if (repliedToEvent.type === "m.room.message" && repliedToEvent.content.msgtype === "m.text" && "formatted_body" in repliedToEvent.content) {
 					const namePrefixMatch = realBody.match(/:([a-zA-Z0-9_]{2,})(?:\b|:)/)
-					const imgMatches = [...repliedToEvent.content.formatted_body.matchAll(/<img [^>]*>/g)]
+					const imgMatches = [...repliedToEvent.content.formatted_body.matchAll(/<img [^<>]*>/g)]
 					for (const match of imgMatches) {
 						const e = match[0]
 						const url = e.match(/src="([^"]*)"/)?.[1]
@@ -158,8 +171,8 @@ const commands = [{
 					}
 				}
 			}
-			if (!toUpload.length && mxcMatch && nameMatch) {
-				toUpload.push({url: mxcMatch[1], name: nameMatch[1]})
+			if (!toUpload.length && mxcUrl && nameMatch) {
+				toUpload.push({url: mxcUrl, name: nameMatch[1]})
 			}
 			if (!toUpload.length) {
 				return api.sendEvent(event.room_id, "m.room.message", {
@@ -209,7 +222,7 @@ const commands = [{
 						b.add("", `<img data-mx-emoticon height="48" src="${e.url}" title=":${e.name}:" alt=":${e.name}:">`)
 					}
 					await api.sendState(event.room_id, type, key, pack)
-					api.sendEvent(event.room_id, "m.room.message", {
+					await api.sendEvent(event.room_id, "m.room.message", {
 						...ctx,
 						...b.get()
 					})
@@ -225,7 +238,7 @@ const commands = [{
 						console.log(`uploading emoji ${resizeOutput.data.length} bytes to :${e.name}:`)
 						await discord.snow.assets.createGuildEmoji(guildID, {name: e.name, image: "data:image/png;base64," + resizeOutput.data.toString("base64")})
 					}
-					api.sendEvent(event.room_id, "m.room.message", {
+					await api.sendEvent(event.room_id, "m.room.message", {
 						...ctx,
 						msgtype: "m.text",
 						body: `Created ${toUpload.length} emojis`
@@ -296,7 +309,7 @@ const commands = [{
 			try {
 				var invite = await discord.snow.channel.createChannelInvite(channelID)
 			} catch (e) {
-				if (e.message === `{"message": "Missing Permissions", "code": 50013}`) {
+				if (e.message === "Missing Permissions") {
 					return api.sendEvent(event.room_id, "m.room.message", {
 						...ctx,
 						msgtype: "m.text",
@@ -315,6 +328,114 @@ const commands = [{
 				...ctx,
 				msgtype: "m.text",
 				body: `https://discord.gg/${invite.code}\nValid for next ${validHours} hours, ${validUses}.`
+			})
+		}
+	)
+}, {
+	aliases: ["time"],
+	execute: replyctx(
+		async (event, realBody, words, ctx) => {
+			// Guard
+			/** @type {string} */ // @ts-ignore
+			const channelID = select("channel_room", "channel_id", {room_id: event.room_id}).pluck().get()
+			const channel = discord.channels.get(channelID)
+			const guildID = channel?.["guild_id"]
+			if (!guildID) {
+				return api.sendEvent(event.room_id, "m.room.message", {
+					...ctx,
+					msgtype: "m.text",
+					body: "This room isn't bridged to the other side."
+				})
+			}
+
+			// Get user timezone
+			const profile = await api.getProfile(event.sender)
+			const senderTimeZone = profile?.["m.tz"]
+			if (!senderTimeZone) {
+				return api.sendEvent(event.room_id, "m.room.message", {
+					...ctx,
+					msgtype: "m.text",
+					body: "This command converts a time in your local time zone for everybody else. But I don't know your time zone. Please set your time zone (hopefully possible in your client's settings/account menu) and try again."
+				})
+			}
+
+			try {
+				var now = Temporal.Now.zonedDateTimeISO(senderTimeZone)
+			} catch (e) {
+				return api.sendEvent(event.room_id, "m.room.message", {
+					...ctx,
+					...new mxUtils.MatrixStringBuilder().add(
+						`The time zone on your account, "${senderTimeZone}", is not valid. It needs to be an IANA time zone value, with a slash. See yours here: https://time.is/your_time_zone`,
+						tag`The time zone on your account, <code>${senderTimeZone}</code>, is not valid. It needs to be an IANA time zone value with a slash. <a href="https://time.is/your_time_zone">See yours here.</a>`
+					).get()
+				})
+			}
+
+			const input = words.slice(1).join(" ").trim()
+			if (!input) {
+				return api.sendEvent(event.room_id, "m.room.message", {
+					...ctx,
+					msgtype: "m.text",
+					body: "This command converts a time in your local time zone for everybody else. Use this command with a time or date (English natural language)."
+				})
+			}
+
+			try {
+				var parsed = tw.parse(input)
+				var when = tw.tellMeWhen(input, {now})
+			} catch (e) {
+				return api.sendEvent(event.room_id, "m.room.message", {
+					...ctx,
+					msgtype: "m.text",
+					body: "I didn't understand your input. If you think your input was reasonable, please report this as a bug."
+				})
+			}
+
+			const messageID = select("event_message", "message_id", {event_id: event.event_id}).pluck().get()
+
+			const hasDate = parsed.some(x => Array.isArray(x) && x[0].match(/year|month|week|date|day/i))
+			const hasTime = parsed.some(x => Array.isArray(x) && x[0].match(/hour|minute|second/i))
+			const colonStyle =
+				( hasDate && hasTime ? ":F"
+				: hasDate ? ":D"
+				: ":t")
+
+			/** @param {Temporal.ZonedDateTime} z */
+			function convertOne(z) {
+				return "<t:" + Math.floor(z.toInstant().epochMilliseconds / 1000) + colonStyle + ">"
+			}
+
+			if (Array.isArray(when)) { // convert range
+				var content = `From ${convertOne(when[0])} to ${convertOne(when[1])}`
+			} else { // convert single time
+				var content = `${convertOne(when)}`
+			}
+
+			/** @type {DiscordTypes.RESTPostAPIChannelMessageJSONBody} */
+			const message = {
+				flags: DiscordTypes.MessageFlags.IsComponentsV2,
+				components: [{
+					type: DiscordTypes.ComponentType.Container,
+					components: [{
+						type: DiscordTypes.ComponentType.TextDisplay,
+						content: `## ${content}\n-# Wrong? 🗑️ to delete`
+					}]
+				}]
+			}
+			if (messageID) {
+				Object.assign(message, {
+					message_reference: {
+						type: DiscordTypes.MessageReferenceType.Default,
+						message_id: messageID,
+					}
+				})
+			}
+			const sent = await discord.snow.channel.createMessage(channelID, message)
+			if (!await retrigger.waitForMessage(sent.id)) return
+			const sentEventID = select("event_message", "event_id", {message_id: sent.id}, "ORDER BY reaction_part").pluck().get()
+			assert(sentEventID)
+			addButton(event.room_id, sentEventID, "🗑️", event.sender).then(() => {
+				discord.snow.channel.deleteMessage(channelID, sent.id).catch(() => {})
 			})
 		}
 	)

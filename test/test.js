@@ -1,5 +1,8 @@
 // @ts-check
 
+// Ensure consistent output from the Intl and Temporal API across Node.js versions
+require("temporal-polyfill-lite/shim").install(true)
+
 const fs = require("fs")
 const {join} = require("path")
 const sqlite = require("better-sqlite3")
@@ -130,7 +133,10 @@ file._actuallyUploadDiscordFileToMxc = function(url, res) { throw new Error(`Not
 
 	require("./addbot.test")
 	require("../src/db/orm.test")
+	require("../src/js/errors.test")
 	require("../src/web/server.test")
+	require("../src/web/web-utils.test")
+	require("../src/discord/time.test")
 	require("../src/discord/utils.test")
 	require("../src/matrix/kstate.test")
 	require("../src/matrix/api.test")
@@ -150,6 +156,7 @@ file._actuallyUploadDiscordFileToMxc = function(url, res) { throw new Error(`Not
 	require("../src/d2m/converters/message-to-event.test")
 	require("../src/d2m/converters/message-to-event.test.components")
 	require("../src/d2m/converters/message-to-event.test.embeds")
+	require("../src/d2m/converters/message-to-event.test.injection")
 	require("../src/d2m/converters/message-to-event.test.pk")
 	require("../src/d2m/converters/pins-to-list.test")
 	require("../src/d2m/converters/remove-member-mxids.test")

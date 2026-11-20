@@ -25,8 +25,12 @@ INSERT INTO channel_room (channel_id, room_id, name, nick, thread_parent, custom
 ('1161864271370666075', '!mHmhQQPwXNananMUqq:cadence.moe', 'updates', NULL, NULL, NULL, '112760669178241024'),
 ('1438284564815548418', '!MHxNpwtgVqWOrmyoTn:cadence.moe', 'sin-cave', NULL, NULL, NULL, '665289423482519565'),
 ('598707048112193536', '!JBxeGYnzQwLnaooOLD:cadence.moe', 'winners', NULL, NULL, NULL, '1345641201902288987');
+UPDATE channel_room SET room_mention_role = '123456' WHERE room_id = '!fGgIymcYWOqjbSRUdV:cadence.moe';
 
 INSERT INTO historical_channel_room (reference_channel_id, room_id, upgraded_timestamp) SELECT channel_id, room_id, 0 FROM channel_room;
+
+INSERT INTO channel_speedbump (channel_id, speedbump_webhook_id, speedbump_user_id) VALUES
+('112760669178241024', '1349427364265988116', '466378653216014359');
 
 INSERT INTO sim (user_id, username, sim_name, mxid) VALUES
 ('0',                  'Matrix Bridge', 'bot', '@_ooye_bot:cadence.moe'),
@@ -41,8 +45,8 @@ INSERT INTO sim (user_id, username, sim_name, mxid) VALUES
 ('772659086046658620', 'cadence.worm', 'cadence', '@_ooye_cadence:cadence.moe'),
 ('196188877885538304', 'ampflower', 'ampflower', '@_ooye_ampflower:cadence.moe'),
 ('1458668878107381800', 'Evil Lillith (she/her)', 'evil_lillith_sheher', '@_ooye_evil_lillith_sheher:cadence.moe'),
-('197126718400626689', 'infinidoge1337', 'infinidoge1337', '@_ooye_infinidoge1337:cadence.moe');
-
+('197126718400626689', 'infinidoge1337', 'infinidoge1337', '@_ooye_infinidoge1337:cadence.moe'),
+('webhook_spidey_bot', 'Spidey Bot', 'webhook_spidey_bot', '@_ooye_webhook_spidey_bot:cadence.moe');
 
 INSERT INTO sim_member (mxid, room_id, hashed_profile_content) VALUES
 ('@_ooye_bojack_horseman:cadence.moe', '!hYnGGlPHlbujVVfktC:cadence.moe', NULL),
@@ -168,7 +172,9 @@ INSERT INTO file (discord_url, mxc_url) VALUES
 ('https://cdn.discordapp.com/attachments/122155380120748034/1174514575220158545/the.yml', 'mxc://cadence.moe/HnQIYQmmlIKwOQsbFsIGpzPP'),
 ('https://cdn.discordapp.com/attachments/112760669178241024/1296237494987133070/100km.gif', 'mxc://cadence.moe/qDAotmebTfEIfsAIVCEZptLh'),
 ('https://cdn.discordapp.com/attachments/123/456/my_enemies.txt', 'mxc://cadence.moe/y89EOTRp2lbeOkgdsEleGOge'),
-('https://cdn.discordapp.com/emojis/1254940125948022915.webp', 'mxc://cadence.moe/bvVJFgOIyNcAknKCbmaHDktG');
+('https://cdn.discordapp.com/emojis/1254940125948022915.webp', 'mxc://cadence.moe/bvVJFgOIyNcAknKCbmaHDktG'),
+('https://media.discordapp.net/attachments/1160894080998461480/1548656385292509274/855064e9-bdae-487a-a497-c662bd510487.png?format=webp', 'mxc://cadence.moe/zXNXRvJwRDMIzZZVqHUXtGeD'),
+('https://cdn.discordapp.com/attachments/1100319550446252084/1187111291932905554/image.png', 'mxc://cadence.moe/OniWDPlpuILFMxxEvczCjzyg');
 
 INSERT INTO emoji (emoji_id, name, animated, mxc_url) VALUES
 ('230201364309868544', 'hippo', 0, 'mxc://cadence.moe/qWmbXeRspZRLPcjseyLmeyXC'),

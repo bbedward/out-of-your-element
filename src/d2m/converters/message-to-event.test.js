@@ -4,7 +4,7 @@ const {MatrixServerError} = require("../../matrix/mreq")
 const data = require("../../../test/data")
 const {mockGetEffectivePower} = require("../../matrix/utils.test")
 const Ty = require("../../types")
-const {db} = require("../../passthrough")
+const {db, discord} = require("../../passthrough")
 
 /**
  * @param {string} roomID
@@ -192,6 +192,38 @@ test("message2event: manually constructed unknown roles should use fallback", as
 	}])
 })
 
+test("message2event: simple game mentions", async t => {
+	const events = await messageToEvent(data.message.simple_game_mention, data.guild.general, {})
+	t.deepEqual(events, [{
+		$type: "m.room.message",
+		"m.mentions": {},
+		msgtype: "m.text",
+		body: "do you play Minecraft"
+	}])
+})
+
+test("message2event: timestamps", async t => {
+	const events = await messageToEvent(data.message.timestamps, data.guild.general, {})
+	t.deepEqual(events, [{
+		$type: "m.room.message",
+		msgtype: "m.text",
+		body: "4 Oct 2026, 9:33:33 am (UTC)"
+			+ "\n4 October 2026 at 9:33 am (UTC)"
+			+ "\nSunday, 4 October 2026 at 9:34 am (UTC)"
+			+ "\n9:34:08 am (UTC)"
+			+ "\n3 October 2026 at 9:30 am (UTC)"
+			+ "\n24 December 2026 at 11:00 pm (UTC)",
+		format: "org.matrix.custom.html",
+		formatted_body: `<a href="https://bridge.example.org/time/1791106413/S"><time data-style="S" datetime="2026-10-04T09:33:33.000Z">4 Oct 2026, 9:33:33 am (UTC)</time></a>`
+			+ `<br><a href="https://bridge.example.org/time/1791106436/f"><time data-style="f" datetime="2026-10-04T09:33:56.000Z">4 October 2026 at 9:33 am (UTC)</time></a>`
+			+ `<br><a href="https://bridge.example.org/time/1791106440/F"><time data-style="F" datetime="2026-10-04T09:34:00.000Z">Sunday, 4 October 2026 at 9:34 am (UTC)</time></a>`
+			+ `<br><a href="https://bridge.example.org/time/1791106448/T"><time data-style="T" datetime="2026-10-04T09:34:08.000Z">9:34:08 am (UTC)</time></a>`
+			+ `<br><a href="https://bridge.example.org/time/1791019800/R"><time data-style="R" datetime="2026-10-03T09:30:00.000Z">3 October 2026 at 9:30 am (UTC)</time></a>`
+			+ `<br><a href="https://bridge.example.org/time/1798153200/R"><time data-style="R" datetime="2026-12-24T23:00:00.000Z">24 December 2026 at 11:00 pm (UTC)</time></a>`,
+		"m.mentions": {}
+	}])
+})
+
 test("message2event: simple message link", async t => {
 	let called = 0
 	const events = await messageToEvent(data.message.simple_message_link, data.guild.general, {}, {
@@ -334,9 +366,9 @@ test("message2event: spoiler attachment", async t => {
 		$type: "m.room.message",
 		"m.mentions": {},
 		msgtype: "m.text",
-		body: "📄 Uploaded SPOILER file: https://bridge.example.org/download/discordcdn/1100319550446252084/1147465564307079258/SPOILER_69-GNDP-CADENCE.nfs.gci (74 KB)",
+		body: "📄 Uploaded SPOILER file: https://bridge.example.org/download/discordcdn/1100319550446252084/1147465564307079258/SPOILER_69-GNDP-CADENCE.nfs.gci?spoiler=yes (74 KB)",
 		format: "org.matrix.custom.html",
-		formatted_body: "<blockquote>📄 Uploaded SPOILER file: <a href=\"https://bridge.example.org/download/discordcdn/1100319550446252084/1147465564307079258/SPOILER_69-GNDP-CADENCE.nfs.gci\">https://bridge.example.org/download/discordcdn/1100319550446252084/1147465564307079258/SPOILER_69-GNDP-CADENCE.nfs.gci</a> (74 KB)</blockquote>"
+		formatted_body: "📄 Uploaded <strong>SPOILER</strong> file: <a href=\"https://bridge.example.org/download/discordcdn/1100319550446252084/1147465564307079258/SPOILER_69-GNDP-CADENCE.nfs.gci?spoiler=yes\">https://bridge.example.org/download/discordcdn/1100319550446252084/1147465564307079258/SPOILER_69-GNDP-CADENCE.nfs.gci?spoiler=yes</a> (74 KB)"
 	}])
 })
 
@@ -1103,6 +1135,45 @@ test("message2event: very large attachment is linked instead of being uploaded",
 	}])
 })
 
+test("message2event: very large png is converted to webp for upload", async t => {
+	const events = await messageToEvent({
+		content: "",
+		attachments: [{
+			filename: "855064e9-bdae-487a-a497-c662bd510487.png",
+			url: "https://cdn.discordapp.com/attachments/1160894080998461480/1548656385292509274/855064e9-bdae-487a-a497-c662bd510487.png",
+			proxy_url: "https://media.discordapp.net/attachments/1160894080998461480/1548656385292509274/855064e9-bdae-487a-a497-c662bd510487.png",
+			content_type: "image/png",
+			width: 5472,
+			height: 3648,
+			size: 14967919
+		}]
+	}, data.guild.general, {}, {
+		async fetch(url, init) {
+			t.equal(url, "https://media.discordapp.net/attachments/1160894080998461480/1548656385292509274/855064e9-bdae-487a-a497-c662bd510487.png?format=webp")
+			t.equal(init.method, "HEAD")
+			return new Response("wa", {headers: {
+				"Content-Type": "image/webp",
+				"Content-Length": 483085
+			}})
+		}
+	})
+	t.deepEqual(events, [{
+		$type: "m.room.message",
+		"m.mentions": {},
+		msgtype: "m.image",
+		body: "855064e9-bdae-487a-a497-c662bd510487.webp",
+		info: {
+			w: 5472,
+			h: 3648,
+			mimetype: "image/webp",
+			size: 483085
+		},
+		external_url: "https://bridge.example.org/download/discordcdn/1160894080998461480/1548656385292509274/855064e9-bdae-487a-a497-c662bd510487.png",
+		filename: "855064e9-bdae-487a-a497-c662bd510487.webp",
+		url: "mxc://cadence.moe/zXNXRvJwRDMIzZZVqHUXtGeD"
+	}])
+})
+
 test("message2event: multiple attachments are combined into the same event where possible", async t => {
 	const events = await messageToEvent({
 		content: "hey",
@@ -1134,13 +1205,13 @@ test("message2event: multiple attachments are combined into the same event where
 		msgtype: "m.text",
 		body: "hey"
 			+ "\n📄 Uploaded file: https://bridge.example.org/download/discordcdn/123/456/789.mega (100 MB)"
-			+ "\n📸 Uploaded SPOILER file: https://bridge.example.org/download/discordcdn/123/456/SPOILER_secret.jpg (38 KB)"
+			+ "\n📸 Uploaded SPOILER file: https://bridge.example.org/download/discordcdn/123/456/SPOILER_secret.jpg?spoiler=yes (38 KB)"
 			+ "\n📄 Uploaded file: https://bridge.example.org/download/discordcdn/123/456/789.mega (100 MB)",
 		format: "org.matrix.custom.html",
 		formatted_body: "hey"
 			+ `<br>📄 Uploaded file: <a href="https://bridge.example.org/download/discordcdn/123/456/789.mega">hey.jpg</a> (100 MB)`
-			+ `<br><blockquote>📸 Uploaded SPOILER file: <a href="https://bridge.example.org/download/discordcdn/123/456/SPOILER_secret.jpg">https://bridge.example.org/download/discordcdn/123/456/SPOILER_secret.jpg</a> (38 KB)</blockquote>`
-			+ `📄 Uploaded file: <a href="https://bridge.example.org/download/discordcdn/123/456/789.mega">hey.jpg</a> (100 MB)`
+			+ `<br>📸 Uploaded <strong>SPOILER</strong> file: <a href=\"https://bridge.example.org/download/discordcdn/123/456/SPOILER_secret.jpg?spoiler=yes\">https://bridge.example.org/download/discordcdn/123/456/SPOILER_secret.jpg?spoiler=yes</a> (38 KB)`
+			+ `<br>📄 Uploaded file: <a href="https://bridge.example.org/download/discordcdn/123/456/789.mega">hey.jpg</a> (100 MB)`
 	}, {
 		$type: "m.room.message",
 		"m.mentions": {},
@@ -1518,12 +1589,12 @@ test("message2event: irl invite event renders embed", async t => {
 		{
 			$type: "m.room.message",
 			msgtype: "m.notice",
-			body: `| Scheduled Event - 8 June at 10:00 pm NZT – 9 June at 12:00 am NZT`
+			body: `| Scheduled Event - Sunday, 8 June, 10:00 am – 12:00 pm (UTC)`
 				+ `\n| ## forest exploration`
 				+ `\n| `
 				+ `\n| 📍 the dark forest`,
 			format: "org.matrix.custom.html",
-			formatted_body: `<blockquote><p>Scheduled Event - 8 June at 10:00 pm NZT – 9 June at 12:00 am NZT</p>`
+			formatted_body: `<blockquote><p>Scheduled Event - <a href=\"https://bridge.example.org/time/1749376800/F\">Sunday, 8 June, 10:00 am – 12:00 pm (UTC)</a></p>`
 				+ `<strong>forest exploration</strong>`
 				+ `<p>📍 the dark forest</p></blockquote>`,
 			"m.mentions": {}
@@ -1551,13 +1622,13 @@ test("message2event: vc invite event renders embed", async t => {
 		{
 			$type: "m.room.message",
 			msgtype: "m.notice",
-			body: `| Scheduled Event - 9 June at 3:00 pm NZT`
+			body: `| Scheduled Event - Monday, 9 June 2025 at 3:00 am (UTC)`
 				+ `\n| ## Cooking (Netrunners)`
 				+ `\n| Short circuited brain interfaces actually just means your brain is medium rare, yum.`
 				+ `\n| `
 				+ `\n| 🔊 Cooking`,
 			format: "org.matrix.custom.html",
-			formatted_body: `<blockquote><p>Scheduled Event - 9 June at 3:00 pm NZT</p>`
+			formatted_body: `<blockquote><p>Scheduled Event - <a href=\"https://bridge.example.org/time/1749438000/F\">Monday, 9 June 2025 at 3:00 am (UTC)</a></p>`
 				+ `<strong>Cooking (Netrunners)</strong><br>Short circuited brain interfaces actually just means your brain is medium rare, yum.`
 				+ `<p>🔊 Cooking</p></blockquote>`,
 			"m.mentions": {}
@@ -1593,13 +1664,13 @@ test("message2event: vc invite event renders embed with room link", async t => {
 		{
 			$type: "m.room.message",
 			msgtype: "m.notice",
-			body: `| Scheduled Event - 9 June at 3:00 pm NZT`
+			body: `| Scheduled Event - Monday, 9 June 2025 at 3:00 am (UTC)`
 				+ `\n| ## Cooking (Netrunners)`
 				+ `\n| Short circuited brain interfaces actually just means your brain is medium rare, yum.`
 				+ `\n| `
 				+ `\n| 🔊 Hey. - https://matrix.to/#/!FuDZhlOAtqswlyxzeR:cadence.moe?via=cadence.moe`,
 			format: "org.matrix.custom.html",
-			formatted_body: `<blockquote><p>Scheduled Event - 9 June at 3:00 pm NZT</p>`
+			formatted_body: `<blockquote><p>Scheduled Event - <a href=\"https://bridge.example.org/time/1749438000/F\">Monday, 9 June 2025 at 3:00 am (UTC)</a></p>`
 				+ `<strong>Cooking (Netrunners)</strong><br>Short circuited brain interfaces actually just means your brain is medium rare, yum.`
 				+ `<p>🔊 Hey. - <a href="https://matrix.to/#/!FuDZhlOAtqswlyxzeR:cadence.moe?via=cadence.moe">Hey.</a></p></blockquote>`,
 			"m.mentions": {}
@@ -1612,7 +1683,7 @@ test("message2event: expired/invalid invites are sent as-is", async t => {
 		snow: {
 			invite: {
 				async getInvite() {
-					throw new Error(`{"message": "Unknown Invite", "code": 10006}`)
+					throw new Error(`Unknown Invite`)
 				}
 			}
 		}
@@ -1881,7 +1952,7 @@ test("message2event: multiple-choice poll", async t => {
 	}])
 })
 
-test("message2event: smalltext from regular user", async t => {
+test("message2event: smalltext from regular user is converted", async t => {
 	const events = await messageToEvent({
 		content: "-# hmm",
 		author: {
@@ -1893,5 +1964,72 @@ test("message2event: smalltext from regular user", async t => {
 		msgtype: "m.text",
 		"m.mentions": {},
 		body: "...hmm"
+	}])
+})
+
+test("message2event: smalltext from bot is intact", async t => {
+	const events = await messageToEvent({
+		content: "-# hmm",
+		author: {
+			bot: true
+		}
+	})
+	t.deepEqual(events, [{
+		$type: "m.room.message",
+		msgtype: "m.text",
+		"m.mentions": {},
+		body: "-# hmm",
+		format: "org.matrix.custom.html",
+		formatted_body: "<sub>hmm</sub>"
+	}])
+})
+
+test("message2event: smalltext and parentheses from regular user is converted", async t => {
+	const events = await messageToEvent({
+		content: "-# (hmm...)",
+		author: {
+			bot: false
+		}
+	})
+	t.deepEqual(events, [{
+		$type: "m.room.message",
+		msgtype: "m.text",
+		"m.mentions": {},
+		body: "(...hmm...)"
+	}])
+})
+
+test("message2event: smalltext from proxy bot is converted", async t => {
+	const events = await messageToEvent({
+		content: "-# hmm",
+		embeds: [],
+		channel_id: "112760669178241024",
+		webhook_id: "1349427364265988116"
+	})
+	t.deepEqual(events, [{
+		$type: "m.room.message",
+		msgtype: "m.text",
+		"m.mentions": {},
+		body: "...hmm"
+	}])
+})
+
+test("message2event: smalltext from other webhook is intact", async t => {
+	const events = await messageToEvent({
+		content: "-# hmm",
+		embeds: [],
+		channel_id: "112760669178241024",
+		webhook_id: "4",
+		author: {
+			bot: false
+		}
+	})
+	t.deepEqual(events, [{
+		$type: "m.room.message",
+		msgtype: "m.text",
+		"m.mentions": {},
+		body: "-# hmm",
+		format: "org.matrix.custom.html",
+		formatted_body: "<sub>hmm</sub>"
 	}])
 })

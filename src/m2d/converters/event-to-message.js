@@ -3,7 +3,6 @@
 
 const Ty = require("../../types")
 const DiscordTypes = require("discord-api-types/v10")
-const stream = require("stream")
 const chunk = require("chunk-text")
 const TurndownService = require("@cloudrac3r/turndown")
 const domino = require("domino")
@@ -32,6 +31,8 @@ const setupEmojis = sync.require("../actions/setup-emojis")
 const userToMxid = sync.require("../../d2m/converters/user-to-mxid")
 /** @type {import("../../web/routes/letter-avatar")} */
 const letterAvatar = sync.require("../../web/routes/letter-avatar")
+/** @type {import("../../d2m/actions/retrigger")} */
+const retrigger = sync.require("../../d2m/actions/retrigger")
 
 /** @type {[RegExp, string][]} */
 const markdownEscapes = [
@@ -98,15 +99,6 @@ turndownService.addRule("underline", {
 	}
 })
 
-turndownService.addRule("blockquote", {
-	filter: "blockquote",
-	replacement: function (content) {
-		content = content.replace(/^\n+|\n+$/g, "")
-		content = content.replace(/^/gm, "> ")
-		return content
-	}
-})
-
 turndownService.addRule("spoiler", {
 	filter: function (node, options) {
 		return node.tagName === "SPAN" && node.hasAttribute("data-mx-spoiler")
@@ -157,7 +149,7 @@ turndownService.addRule("listItem", {
 	replacement: function (content, node, options) {
 		content = content
 		.replace(/^\n+/, "") // remove leading newlines
-		.replace(/\n+$/, "\n") // replace trailing newlines with just a single one
+		.replace(/([^\n])\n+$/, "$1\n") // replace trailing newlines with just a single one
 		.replace(/\n/gm, "\n  ") // indent
 		var prefix = options.bulletListMarker + " "
 		var parent = node.parentNode
@@ -201,7 +193,7 @@ turndownService.addRule("emoji", {
 
 	replacement: function (content, node) {
 		const mxcUrl = node.getAttribute("src")
-		const guessedName = node.getAttribute("title").replace(/^:|:$/g, "")
+		const guessedName = node.getAttribute("title")
 		return convertEmoji(mxcUrl, guessedName, true, true)
 	}
 })
@@ -233,7 +225,7 @@ turndownService.addRule("fencedCodeBlock", {
 
 /** @param {{ childNodes: Node[]; }} preCode the <code> directly inside the <pre> */
 function getCodeContent(preCode) {
-	return preCode.childNodes.map(c => c.nodeName === "BR" ? "\n" : c.textContent).join("").replace(/\n*$/g, "")
+	return preCode.childNodes.map(c => c.nodeName === "BR" ? "\n" : c.textContent).join("").replace(/([^\n])\n+$/g, "$1")
 }
 
 /**
@@ -244,6 +236,7 @@ function getCodeContent(preCode) {
  * @returns {string} discord markdown that represents the custom emoji in some form
  */
 function convertEmoji(mxcUrl, nameForGuess, allowSpriteSheetIndicator, allowLink) {
+	nameForGuess = nameForGuess?.replace(/^:|:$/g, "") || null
 	// Get the known emoji from the database.
 	if (mxcUrl) var row = select("emoji", ["emoji_id", "name", "animated"], {mxc_url: mxcUrl}).get()
 	// Now we have to search all servers to see if we're able to send this emoji.
@@ -252,7 +245,7 @@ function convertEmoji(mxcUrl, nameForGuess, allowSpriteSheetIndicator, allowLink
 		if (!found) row = null
 	}
 	// Or, if we don't have an emoji right now, we search for the name instead.
-	const isLocalMxc = mxcUrl?.match(/^mxc:\/\/([^/]+)/)?.[1] === reg.ooye.server_name
+	const isLocalMxc = mxUtils.parseMxc(mxcUrl)?.serverName === reg.ooye.server_name
 	if (!row && nameForGuess && isLocalMxc) {
 		const nameForGuessLower = nameForGuess.toLowerCase()
 		for (const guild of discord.guilds.values()) {
@@ -393,7 +386,7 @@ function linkEndOfMessageSpriteSheet(content) {
  */
 async function handleRoomOrMessageLinks(input, di) {
 	let offset = 0
-	for (const match of [...input.matchAll(/("?https:\/\/matrix.to\/#\/((?:#|%23|!)[^"/, ?)]+)(?:\/(\$[^"/ ?)]+))?(?:\?[^",:!? )]*?)?)(">|[,<\n )]|$)/g)]) {
+	for (const match of [...input.matchAll(/("?https:\/\/matrix.to\/#\/((?:#|%23|!|%21)[^"/, ?)]+)(?:\/((?:\$|%24)[^"/ ?)]+))?(?:\?[^",:!? )]*?)?)(">|[,<\n )]|$)/g)]) {
 		assert(typeof match.index === "number")
 		let [_, attributeValue, roomID, eventID, endMarker] = match
 		let result
@@ -459,22 +452,23 @@ async function handleRoomOrMessageLinks(input, di) {
 
 /**
  * @param {string} content
- * @param {string} senderMxid
- * @param {string} roomID
+ * @param {{content: any, room_id: string, sender: string}} event
  * @param {DiscordTypes.APIGuild} guild
  * @param {{api: import("../../matrix/api"), snow: import("snowtransfer").SnowTransfer}} di
  */
-async function checkWrittenMentions(content, senderMxid, roomID, guild, di) {
+async function checkWrittenMentions(content, event, guild, di) {
 	let writtenMentionMatch = content.match(/(?:^|[^"[<>/A-Za-z0-9])@([A-Za-z][A-Za-z0-9._\[\]\(\)-]+):?/d) // /d flag for indices requires node.js 16+
 	if (writtenMentionMatch) {
-		if (writtenMentionMatch[1] === "room") { // convert @room to @everyone
-			const {powers: {[senderMxid]: userPower}, powerLevels} = await mxUtils.getEffectivePower(roomID, [senderMxid], di.api)
+		if (writtenMentionMatch[1] === "room") { // convert @room to discord
+			if (("m.mentions" in event.content) && !event.content["m.mentions"].room) return // check it's allowed by m.mentions if present
+			const {powers: {[event.sender]: userPower}, powerLevels} = await mxUtils.getEffectivePower(event.room_id, [event.sender], di.api)
 			if (userPower >= (powerLevels.notifications?.room ?? 50)) {
+				const roleID = select("channel_room", "room_mention_role", {room_id: event.room_id}).pluck().get()
 				return {
 					// @ts-ignore - typescript doesn't know about indices yet
-					content: content.slice(0, writtenMentionMatch.indices[1][0]-1) + `@everyone` + content.slice(writtenMentionMatch.indices[1][1]),
+					content: content.slice(0, writtenMentionMatch.indices[1][0]-1) + (roleID ? `<@&${roleID}>` : "@everyone") + content.slice(writtenMentionMatch.indices[1][1]),
 					ensureJoined: [],
-					allowedMentionsParse: ["everyone"],
+					allowedMentionsParse: roleID ? [] : ["everyone"],
 					allowedMentionsUsers: []
 				}
 			}
@@ -518,7 +512,7 @@ function getFileSizeForGuild(guild) {
 	if (fileSizeFeature) {
 		return fileSizeFeature * 1024 * 1024 // discord uses big megabytes
 	} else {
-		return 10 * 1024 * 1024 // default file size is 10 MB
+		return 20 * 1024 * 1024 // default file size is 20 MB
 	}
 }
 
@@ -539,11 +533,35 @@ async function getL1L2ReplyLine(called = false) {
 	/* c8 ignore stop */
 }
 
+function serialiseReplyContent(doc) {
+	/** @type {HTMLElement} */ // @ts-ignore
+	const body = doc.getElementById("reply-root")
+	body.querySelectorAll("mx-reply").forEach(e => e.remove())
+	if (body.lastChild?.["tagName"] !== "BLOCKQUOTE") {
+		while (body.firstElementChild?.tagName === "BLOCKQUOTE") body.firstElementChild.remove()
+	}
+	body.querySelectorAll("span[data-mx-spoiler]").forEach(e => e.textContent = "[spoiler]")
+	// @ts-ignore - domino FilteredElementList does not implement NodeList
+	for (const img of body.querySelectorAll("img").cache) {
+		const mxcUrl = img.getAttribute("src")
+		const titleTextMatch = img.getAttribute("title")?.match(/:?([^:"]+)/)
+		if (mxcUrl && mxUtils.parseMxc(mxcUrl) && titleTextMatch) {
+			img.replaceWith(convertEmoji(mxcUrl, titleTextMatch[1], false, false))
+		}
+	}
+	// convert <br> to \n since domino does not support innerText
+	// @ts-ignore - domino FilteredElementList does not implement NodeList
+	for (const br of body.querySelectorAll("br").cache) {
+		br.replaceWith("\n")
+	}
+	return body.textContent
+}
+
 /**
  * @param {Ty.Event.Outer_M_Room_Message | Ty.Event.Outer_M_Room_Message_File | Ty.Event.Outer_M_Sticker | Ty.Event.Outer_M_Room_Message_Encrypted_File | Ty.Event.Outer_Org_Matrix_Msc3381_Poll_Start | Ty.Event.Outer_Org_Matrix_Msc3381_Poll_End} event
  * @param {DiscordTypes.APIGuild} guild
  * @param {DiscordTypes.APIGuildTextChannel} channel
- * @param {{api: import("../../matrix/api"), snow: import("snowtransfer").SnowTransfer, pollEnd?: {messageID: string}}} di simple-as-nails dependency injection for the matrix API
+ * @param {{api: import("../../matrix/api"), snow: import("snowtransfer").SnowTransfer, pollEnd?: {messageID: string}, noRunoff: boolean}} di simple-as-nails dependency injection for the matrix API
  */
 async function eventToMessage(event, guild, channel, di) {
 	let displayName = event.sender
@@ -555,8 +573,8 @@ async function eventToMessage(event, guild, channel, di) {
 	let replyLine = ""
 
 	// Extract a basic display name from the sender
-	const match = event.sender.match(/^@(.*?):/)
-	if (match) displayName = match[1]
+	const localpart = mxUtils.parseMxid(event.sender)?.localpart
+	if (localpart) displayName = localpart
 
 	// Try to extract an accurate display name and avatar URL from the member event
 	const member = await getMemberFromCacheOrHomeserver(event.room_id, event.sender, di?.api)
@@ -565,7 +583,16 @@ async function eventToMessage(event, guild, channel, di) {
 
 	// MSC4144: Override display name and avatar from per-message profile if present
 	const perMessageProfile = event.content["com.beeper.per_message_profile"]
-	if (perMessageProfile?.displayname) displayName = perMessageProfile.displayname
+	if (perMessageProfile?.displayname) {
+		// TODO: Ideally this should filter on the "language" key, rather than just picking the first, once we're aware of the guild's preferred locale.
+		// Regardless, these are intended to be in preference order, and the PMP user could always choose to reorder them if the wrong choice is made here.
+		const pronouns = perMessageProfile["io.fsky.nyx.pronouns"]?.[0]?.summary
+		let pronounsSuffix = ""
+		if (pronouns) {
+			pronounsSuffix = ` (${pronouns})`
+		}
+		displayName = `${perMessageProfile.displayname}${pronounsSuffix} | ${displayName}`
+	}
 	if (perMessageProfile && "avatar_url" in perMessageProfile) {
 		if (perMessageProfile.avatar_url) {
 			// use provided avatar_url
@@ -581,7 +608,7 @@ async function eventToMessage(event, guild, channel, di) {
 	// put the excess characters into displayNameRunoff, later to be put at the top of the message
 	let [displayNameShortened, displayNameRunoff] = splitDisplayName(displayName)
 	// If the message type is m.emote, the full name is already included at the start of the message, so remove any runoff
-	if (event.type === "m.room.message" && event.content.msgtype === "m.emote") {
+	if (di?.noRunoff || (event.type === "m.room.message" && event.content.msgtype === "m.emote")) {
 		displayNameRunoff = ""
 	}
 
@@ -627,7 +654,7 @@ async function eventToMessage(event, guild, channel, di) {
 		let filename = event.content.filename || event.content.body
 		if (!filename) {
 			const extension = mimeTypes.extension(event.content.info?.mimetype)
-			if (!extension) throw new Error("Filename and mimetype missing. Please report this bug to your client.")
+			assert(extension, "Filename and mimetype missing. Please report this bug to your client.")
 			filename = `file.${extension}`
 		}
 
@@ -705,6 +732,13 @@ async function eventToMessage(event, guild, channel, di) {
 			// Check if we have a pointer to what was edited
 			const originalEventId = relatesTo.event_id
 			if (!originalEventId) return
+
+			// Ensure edit is by same sender as original
+			const originalEvent = await di.api.getEvent(event.room_id, originalEventId)
+			if (originalEvent.sender !== event.sender) throw new Error("You tampered with that event to try to edit somebody else's message. Stop it!")
+
+			// Figure out which messages to edit
+			if (!await retrigger.waitForEvent(originalEventId)) return
 			messageIDsToEdit = select("event_message", "message_id", {event_id: originalEventId}, "ORDER BY part").pluck().all()
 			if (!messageIDsToEdit.length) return
 
@@ -712,8 +746,6 @@ async function eventToMessage(event, guild, channel, di) {
 			event = {...event, content: event.content["m.new_content"]}
 
 			// Is it editing a reply? We need special handling if it is.
-			// Get the original event, then check if it was a reply
-			const originalEvent = await di.api.getEvent(event.room_id, originalEventId)
 			const repliedToEventId = originalEvent?.content?.["m.relates_to"]?.["m.in_reply_to"]?.event_id
 			if (!repliedToEventId) return
 
@@ -731,7 +763,7 @@ async function eventToMessage(event, guild, channel, di) {
 		// Handling replies. We'll look up the data of the replied-to event from the Matrix homeserver.
 		// Note that an <mx-reply> element is not guaranteed because this might be m.new_content.
 		await (async () => {
-			const repliedToEventId = event.content["m.relates_to"]?.["m.in_reply_to"]?.event_id
+			let repliedToEventId = event.content["m.relates_to"]?.["m.in_reply_to"]?.event_id
 			if (!repliedToEventId) return
 			let repliedToEvent
 			try {
@@ -754,20 +786,105 @@ async function eventToMessage(event, guild, channel, di) {
 					}
 					return
 				}
-				const mxReply = event.content["formatted_body"]
-				const quoted = mxReply.match(/^<mx-reply><blockquote>.*?In reply to.*?<br>(.*)<\/blockquote><\/mx-reply>/)?.[1]
+				const doc = domino.createDocument(
+					// DOM parsers arrange elements in the <head> and <body>. Wrapping in a custom element ensures elements are reliably arranged in a single element.
+					'<x-quoted id="quoted-root">' + event.content["formatted_body"].trim() + '</x-quoted>'
+					+ '<x-body id="reply-root"></x-body>'
+				)
+				/** @type {HTMLElement} */ // @ts-ignore
+				const body = doc.getElementById("reply-root")
+				const quoted = doc.querySelector("#quoted-root > mx-reply > blockquote")
 				if (!quoted) return
-				const contentPreviewChunks = chunk(
-					entities.decodeHTML5Strict( // Remove entities like &amp; &quot;
-						quoted.replace(/^\s*<blockquote>.*?<\/blockquote>(.....)/s, "$1") // If the message starts with a blockquote, don't count it and use the message body afterwards
-							.replace(/(?:\n|<br>)+/g, " ") // Should all be on one line
-							.replace(/<span [^>]*data-mx-spoiler\b[^>]*>.*?<\/span>/g, "[spoiler]") // Good enough method of removing spoiler content. (I don't want to break out the HTML parser unless I have to.)
-							.replace(/<[^>]+>/g, "") // Completely strip all HTML tags and formatting.
-					), 50)
+				// Strip "In reply to [] []<br>"
+				let foundBr = false
+				while (quoted.firstChild && !foundBr) {
+					foundBr = quoted.firstChild["tagName"] === "BR"
+					quoted.firstChild.remove()
+				}
+				// Transfer the remainder to replyRoot
+				while (quoted.firstChild) body.appendChild(quoted.firstChild)
+				// Strip reply HTML into something usable
+				const contentPreviewChunks = chunk(serialiseReplyContent(doc).replace(/\s+/g, " "), 50)
 				replyLine = "-# > " + contentPreviewChunks[0]
 				if (contentPreviewChunks.length > 1) replyLine = replyLine.replace(/[,.']$/, "") + "..."
 				replyLine += "\n"
 				return
+			}
+
+			// If the event has been edited, the homeserver will include the relation in `unsigned`.
+			if (repliedToEvent.unsigned?.["m.relations"]?.["m.replace"]?.content?.["m.new_content"]) {
+				repliedToEvent = repliedToEvent.unsigned["m.relations"]["m.replace"] // Note: this changes which event_id is in repliedToEvent.
+				repliedToEvent.content = repliedToEvent.content["m.new_content"]
+			}
+			/** @type {string} */
+			let originalRepliedToContent = repliedToEvent.content.formatted_body || repliedToEvent.content.body
+			const fileReplyContentAlternative = attachmentEmojis.get(repliedToEvent.content.msgtype)
+			let contentPreview
+			if (fileReplyContentAlternative) {
+				contentPreview = " " + fileReplyContentAlternative
+			}
+			else if (repliedToEvent.unsigned?.redacted_because) {
+				contentPreview = " (in reply to a deleted message)"
+			}
+			else if (repliedToEvent.type === "m.reaction") {
+				if (repliedToEvent.content?.["m.relates_to"]?.event_id) {
+					// let the reply link be for the reacted-to message
+					repliedToEventId = repliedToEvent.content["m.relates_to"].event_id
+				}
+				contentPreview = "'s reaction"
+				if (mxUtils.parseMxc(repliedToEvent.content?.["m.relates_to"]?.key)) {
+					// reaction is a custom emoji
+					contentPreview += convertEmoji(repliedToEvent.content["m.relates_to"].key, repliedToEvent.content.shortcode, false, false) || "an unknown emoji"
+				} else {
+					// reaction is a unicode emoji or text
+					const contentPreviewChunks = chunk(repliedToEvent.content["m.relates_to"].key, 50)
+					if (contentPreviewChunks.length) {
+						contentPreview = `: ${contentPreviewChunks[0]}`
+						if (contentPreviewChunks.length > 1) contentPreview = contentPreview.replace(/[,.']$/, "") + "..."
+					}
+				}
+			}
+			else if (typeof originalRepliedToContent !== "string") {
+				// in reply to a weird metadata event like m.room.name, m.room.member...
+				// I'm not implementing text fallbacks for arbitrary room events. this should cover most cases
+				// this has never ever happened in the wild anyway
+				repliedToEvent.sender = ""
+				if ("state_key" in repliedToEvent) {
+					contentPreview = " (channel details edited)"
+				} else {
+					contentPreview = " (unrepresentable event)"
+				}
+			}
+			else {
+				// Generate a reply preview for a standard message
+				let repliedToContent = repliedToEvent.content.body
+				if (repliedToEvent.content.formatted_body) {
+					const doc = domino.createDocument(
+						// DOM parsers arrange elements in the <head> and <body>. Wrapping in a custom element ensures elements are reliably arranged in a single element.
+						'<x-body id="reply-root">' + repliedToEvent.content.formatted_body.trim() + '</x-body>'
+					)
+					repliedToContent = serialiseReplyContent(doc)
+				}
+				repliedToContent = repliedToContent.replace(/\s+/g, " ")
+				const contentPreviewChunks = chunk(repliedToContent, 50)
+				if (contentPreviewChunks.length) {
+					contentPreview = ": " + contentPreviewChunks[0]
+					contentPreview = contentPreview.replace(/\bhttps?:\/\/[^ )]*/g, url => {
+						const originalUrlIndex = originalRepliedToContent.indexOf(url)
+						if (originalUrlIndex !== -1 && originalRepliedToContent[originalUrlIndex + url.length]?.match(/[^ )>"'`]/)) { // URL was truncated by chunking, replace it
+							try {
+								const u = new URL(url)
+								return `<via ${u.hostname}>`
+							} catch (e) {
+								return `<url>`
+							}
+						}
+						return `<${url}>` // Full URL is present, escape it
+					})
+					if (contentPreviewChunks.length > 1) contentPreview = contentPreview.replace(/[,.']$/, "") + "..."
+				} else {
+					contentPreview = ""
+				}
 			}
 
 			replyLine = await getL1L2ReplyLine()
@@ -776,54 +893,14 @@ async function eventToMessage(event, guild, channel, di) {
 			if (row) {
 				replyLine += `https://discord.com/channels/${guild.id}/${row.reference_channel_id}/${row.message_id} `
 			}
-			// If the event has been edited, the homeserver will include the relation in `unsigned`.
-			if (repliedToEvent.unsigned?.["m.relations"]?.["m.replace"]?.content?.["m.new_content"]) {
-				repliedToEvent = repliedToEvent.unsigned["m.relations"]["m.replace"] // Note: this changes which event_id is in repliedToEvent.
-				repliedToEvent.content = repliedToEvent.content["m.new_content"]
-			}
-			/** @type {string} */
-			let repliedToContent = repliedToEvent.content.formatted_body || repliedToEvent.content.body
-			const fileReplyContentAlternative = attachmentEmojis.get(repliedToEvent.content.msgtype)
-			let contentPreview
-			if (fileReplyContentAlternative) {
-				contentPreview = " " + fileReplyContentAlternative
-			} else if (repliedToEvent.unsigned?.redacted_because) {
-				contentPreview = " (in reply to a deleted message)"
-			} else if (typeof repliedToContent !== "string") {
-				// in reply to a weird metadata event like m.room.name, m.room.member...
-				// I'm not implementing text fallbacks for arbitrary room events. this should cover most cases
-				// this has never ever happened in the wild anyway
-				repliedToEvent.sender = ""
-				contentPreview = " (channel details edited)"
-			} else {
-				// Generate a reply preview for a standard message
-				repliedToContent = repliedToContent.replace(/.*<\/mx-reply>/s, "") // Remove everything before replies, so just use the actual message body
-				repliedToContent = repliedToContent.replace(/^\s*<blockquote>.*?<\/blockquote>(.....)/s, "$1") // If the message starts with a blockquote, don't count it and use the message body afterwards
-				repliedToContent = repliedToContent.replace(/(?:\n|<br ?\/?>)+/g, " ") // Should all be on one line
-				repliedToContent = repliedToContent.replace(/<span [^>]*data-mx-spoiler\b[^>]*>.*?<\/span>/g, "[spoiler]") // Good enough method of removing spoiler content. (I don't want to break out the HTML parser unless I have to.)
-				repliedToContent = repliedToContent.replace(/<img([^>]*)>/g, (_, att) => { // Convert Matrix emoji images into Discord emoji markdown
-					const mxcUrlMatch = att.match(/\bsrc="(mxc:\/\/[^"]+)"/)
-					const titleTextMatch = att.match(/\btitle=":?([^:"]+)/)
-					return convertEmoji(mxcUrlMatch?.[1], titleTextMatch?.[1], false, false)
-				})
-				repliedToContent = repliedToContent.replace(/<[^:>][^>]*>/g, "") // Completely strip all HTML tags and formatting.
-				repliedToContent = entities.decodeHTML5Strict(repliedToContent) // Remove entities like &amp; &quot;
-				const contentPreviewChunks = chunk(repliedToContent, 50)
-				if (contentPreviewChunks.length) {
-					contentPreview = ": " + contentPreviewChunks[0]
-					contentPreview = contentPreview.replace(/\bhttps?:\/\/[^ )]*/g, "<$&>")
-					if (contentPreviewChunks.length > 1) contentPreview = contentPreview.replace(/[,.']$/, "") + "..."
-				} else {
-					contentPreview = ""
-				}
-			}
+
 			const sender = repliedToEvent.sender
 			const authorMention = getUserOrProxyOwnerMention(sender)
 			if (authorMention) {
 				replyLine += authorMention
 			} else {
 				let senderName = select("member_cache", "displayname", {mxid: sender}).pluck().get()
-				if (!senderName) senderName = sender.match(/@([^:]*)/)?.[1]
+				if (!senderName) senderName = mxUtils.parseMxid(sender)?.localpart
 				if (senderName) replyLine += `**Ⓜ${senderName}**`
 			}
 			replyLine = `-# > ${replyLine}${contentPreview}\n`
@@ -847,7 +924,7 @@ async function eventToMessage(event, guild, channel, di) {
 					} else {
 						// Handle mention of a Matrix user by their mxid
 						// Check if this Matrix user is actually the sim user from another old bridge in the room?
-						const match = mxid.match(/[^:]*discord[^:]*_([0-9]{6,}):/) // try to match @_discord_123456, @_discordpuppet_123456, etc.
+						const match = mxUtils.parseMxid(mxid)?.localpart.match(/discord.*_([0-9]{6,})$/) // try to match @_discord_123456, @_discordpuppet_123456, etc.
 						if (match) return `${attributeValue} data-user-id="${match[1]}">`
 						// Nope, just a real Matrix user.
 						return whole
@@ -857,23 +934,19 @@ async function eventToMessage(event, guild, channel, di) {
 				// Handling mentions of rooms and room-messages
 				input = await handleRoomOrMessageLinks(input, di)
 
-				// Stripping colons after mentions
-				input = input.replace(/( data-user-id.*?<\/a>):?/g, "$1")
-				input = input.replace(/("https:\/\/matrix.to.*?<\/a>):?/g, "$1")
-
 				// Element adds a bunch of <br> before </blockquote> but doesn't render them. I can't figure out how this even works in the browser, so let's just delete those.
-				input = input.replace(/(?:\n|<br ?\/?>\s*)*<\/blockquote>/g, "</blockquote>")
+				//input = input.replace(/(?:[ \t\n]|<br ?\/?>)*<\/blockquote>(?:[ \t]|\n|<br ?\/?>)*/g, "</blockquote>")
 
 				// The matrix spec hasn't decided whether \n counts as a newline or not, but I'm going to count it, because if it's in the data it's there for a reason.
 				// But I should not count it if it's between block elements.
-				input = input.replace(/(<\/?([^ >]+)[^>]*>)?\n(<\/?([^ >]+)[^>]*>)?/g, (whole, beforeContext, beforeTag, afterContext, afterTag) => {
+				input = input.replace(/(<([^<>]+)>)?\n(<([^<>]+)>)?/g, (whole, beforeContext, beforeTag, afterContext, afterTag) => {
 					if (typeof beforeTag !== "string" && typeof afterTag !== "string") {
 						return "<br>"
 					}
 					beforeContext = beforeContext || ""
-					beforeTag = beforeTag || ""
+					beforeTag = beforeTag?.match(/^\/?([^ ]+)/)?.[1] || ""
 					afterContext = afterContext || ""
-					afterTag = afterTag || ""
+					afterTag = afterTag?.match(/^\/?([^ ]+)/)?.[1] || ""
 					if (!mxUtils.BLOCK_ELEMENTS.includes(beforeTag.toUpperCase()) && !mxUtils.BLOCK_ELEMENTS.includes(afterTag.toUpperCase())) {
 						return beforeContext + "<br>" + afterContext
 					} else {
@@ -896,16 +969,61 @@ async function eventToMessage(event, guild, channel, di) {
 				const root = doc.getElementById("turndown-root")
 				assert(root)
 				async function forEachNode(event, node) {
-					for (; node; node = node.nextSibling) {
+					let i = 0
+					while (node) {
+						// Emergency escape
+						if (++i > 100_000) {
+							throw new Error(`Stuck iterating through nodes. Current node: ${node.innerHTML}`)
+						}
+
+						// Don't process mx-reply further
+						if (node.nodeType === 1 && node.tagName === "MX-REPLY") {
+							const toRemove = node
+							node = node.nextSibling
+							toRemove.remove()
+							continue
+						}
+
+						// Remove colons after mentions
+						if (node.nodeType === 1 && node.tagName === "A" && node.nextSibling?.textContent.startsWith(":") && (node.hasAttribute("data-user-id") || node.getAttribute("href")?.match(/^https:\/\/matrix\.to\//))) {
+							// Dig into nextSibling to find the next
+							let next = node.nextSibling
+							while (next.nodeType !== 3) next = next.firstChild
+							if (next?.nodeValue.startsWith(":")) {
+								next.nodeValue = next.nodeValue.slice(1)
+							}
+						}
+
+						// Remove weird room mention wrapper around @room from some clients
+						if (node.nodeType === 1 && node.tagName === "A" && node.textContent === "@room") {
+							const newNode = doc.createTextNode("@room")
+							node.replaceWith(newNode)
+							node = newNode
+						}
+
 						// Check written mentions
 						if (node.nodeType === 3 && node.nodeValue.includes("@") && !nodeIsChildOf(node, ["A", "CODE", "PRE"])) {
-							const result = await checkWrittenMentions(node.nodeValue, event.sender, event.room_id, guild, di)
+							const result = await checkWrittenMentions(node.nodeValue, event, guild, di)
 							if (result) {
 								node.nodeValue = result.content
 								ensureJoined.push(...result.ensureJoined)
 								allowedMentionsParse.push(...result.allowedMentionsParse)
 							}
 						}
+
+						// Remove <br> tags before </blockquote> from Element
+						while (node.nodeType === 1 && node.tagName === "BLOCKQUOTE" && node.lastChild.nodeType === 1 && node.lastChild.tagName === "BR") {
+							node.lastChild.remove()
+						}
+
+						// Remove <br> tags after </blockquote> from Element
+						if (node.nodeType === 1 && node.tagName === "BR" && node.previousSibling?.nodeType === 1 && node.previousSibling?.tagName === "BLOCKQUOTE") {
+							const toRemove = node
+							node = node.nextSibling
+							toRemove.remove()
+							continue
+						}
+
 						// Check for incompatible backticks in code blocks
 						let preNode
 						let isBackticksTextInPre = node.nodeType === 3 && node.nodeValue.includes("```") && (preNode = nodeIsChildOf(node, ["PRE"]))
@@ -946,7 +1064,12 @@ async function eventToMessage(event, guild, channel, di) {
 								node.setAttribute("data-suppress", "")
 							}
 						}
+
+						// Iterate through children
 						await forEachNode(event, node.firstChild)
+
+						// Iterate through remaining siblings
+						node = node.nextSibling
 					}
 				}
 				await forEachNode(event, root)
@@ -957,7 +1080,7 @@ async function eventToMessage(event, guild, channel, di) {
 				endOfMessageEmojis = []
 				let match
 				let last = input.length
-				while ((match = input.slice(0, last).match(/<img [^>]*>\s*$/))) {
+				while ((match = input.slice(0, last).match(/<img [^<>]*>\s*$/))) {
 					if (!match[0].includes("data-mx-emoticon")) break
 					const mxcUrl = match[0].match(/\bsrc="(mxc:\/\/[^"]+)"/)
 					if (mxcUrl) endOfMessageEmojis.unshift(mxcUrl[1])
@@ -1017,7 +1140,7 @@ async function eventToMessage(event, guild, channel, di) {
 					}
 				}
 
-				const result = await checkWrittenMentions(content, event.sender, event.room_id, guild, di)
+				const result = await checkWrittenMentions(content, event, guild, di)
 				if (result) {
 					content = result.content
 					ensureJoined.push(...result.ensureJoined)
@@ -1042,11 +1165,11 @@ async function eventToMessage(event, guild, channel, di) {
 		// Combine requested mentions with detected written mentions to get the full list
 		if (Array.isArray(event.content["m.mentions"].user_ids)) {
 			for (const mxid of event.content["m.mentions"].user_ids) {
-				const user_id = select("sim", "user_id", {mxid}).pluck().get()
-				if (!user_id) continue
-				allowedMentionsUsers.push(
-					select("sim_proxy", "proxy_owner_id", {user_id}).pluck().get() || user_id
-				)
+				let user_id = select("sim", "user_id", {mxid}).pluck().get()
+				if (!user_id) continue // only for discord users
+				user_id = select("sim_proxy", "proxy_owner_id", {user_id}).pluck().get() || user_id // convert to sim proxy owner's ID
+				if (!user_id.match(/^[0-9]+$/)) continue // mentioned sim does not have a real discord user ID (i.e. it's a webhook)
+				allowedMentionsUsers.push(user_id)
 			}
 		}
 		// Specific mentions were requested, so do not parse users
@@ -1055,7 +1178,7 @@ async function eventToMessage(event, guild, channel, di) {
 	}
 
 	// Assemble chunks into Discord messages content
-	/** @type {(DiscordTypes.RESTPostAPIWebhookWithTokenJSONBody & {files?: {name: string, file: Buffer | stream.Readable}[]})[]} */
+	/** @type {(DiscordTypes.RESTPostAPIWebhookWithTokenJSONBody & {files?: {name: string, file: Buffer | Blob}[]})[]} */
 	const messages = chunks.map(content => ({
 		content,
 		allowed_mentions,

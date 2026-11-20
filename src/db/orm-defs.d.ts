@@ -18,11 +18,16 @@ export type Models = {
 		thread_parent: string | null
 		custom_avatar: string | null
 		last_bridged_pin_timestamp: number | null
-		speedbump_id: string | null
-		speedbump_webhook_id: string | null
 		speedbump_checked: number | null
-		guild_id: string | null
+		guild_id: string
 		custom_topic: number
+		room_mention_role: string | null
+	}
+
+	channel_speedbump: {
+		channel_id: string
+		speedbump_webhook_id: string
+		speedbump_user_id: string
 	}
 
 	direct: {
@@ -44,6 +49,7 @@ export type Models = {
 		event_subtype: string | null
 		part: number
 		reaction_part: number
+		/** 0 = Matrix, 1 = Discord */
 		source: number
 	}
 
@@ -59,6 +65,7 @@ export type Models = {
 		presence: 0 | 1
 		url_preview: 0 | 1
 		webhook_profile: 0 | 1
+		nicknamed: 0 | 1
 	}
 
 	guild_active: {
@@ -110,6 +117,11 @@ export type Models = {
 		historical_room_index: number
 	}
 
+	opt_out: {
+		user_id: string
+		opted_out_at: number
+	}
+
 	role_default: {
 		guild_id: string
 		role_id: string
@@ -137,6 +149,8 @@ export type Models = {
 		user_id: string
 		proxy_owner_id: string
 		displayname: string
+		/** 0 = PluralKit, 1 = /plu/ral */
+		proxy_app: number
 	}
 
 	webhook: {
